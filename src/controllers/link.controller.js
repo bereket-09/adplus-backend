@@ -52,7 +52,7 @@ exports.createLink = async (req, res, next) => {
       return res.json({
         status: true,
         token: existing.token,
-        watch_url: `${API_DOMAIN}/watch/${existing.token}`,
+        watch_url: `${API_DOMAIN}/watch?v=${existing.token}`,
         state: existing.status,
         secure_key: existing.secure_key,
         createdStatus: "existing"
@@ -119,7 +119,7 @@ exports.createLink = async (req, res, next) => {
     return res.json({
       status: true,
       token,
-      watch_url: `${API_DOMAIN}/watch/${token}`,
+      watch_url: `${API_DOMAIN}/watch?v=${token}`,
       state: watch.status,
       secure_key: watch.secure_key,
       createdStatus: "new"
@@ -142,31 +142,31 @@ exports.getVideoByToken = async (req, res, next) => {
 
     if (!metaBase64) {
       logger.error(`WatchLinkController.getVideoByToken - meta_base64 required`);
-      return res.status(400).json({ status: false, error: 'meta_base64 required' });
+      return res.status(400).json({ status: false, error: 'invalid Link or user status' });
     }
 
     const watch = await WatchLink.findOne({ token });
     if (!watch) {
       logger.error(`WatchLinkController.getVideoByToken - Invalid token ${token}`);
-      return res.status(404).json({ status: false, error: 'invalid token' });
+      return res.status(404).json({ status: false, error: 'invalid Link or user status' });
     }
 
     if (watch.status === 'completed' || watch.expires_at < new Date()) {
       logger.debug(`WatchLinkController.getVideoByToken - Token ${token} expired or completed`);
-      return res.status(410).json({ status: false, error: 'token expired or completed' });
+      return res.status(410).json({ status: false, error: 'Shared Link expired or May have been Already Completed' });
     }
 
     const meta = Meta.decodeAndValidate(metaBase64);
     if (!meta.valid) {
       await watch.addAudit('opened', false, meta.report);
       logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}`);
-      return res.status(400).json({ status: false, error: 'invalid metadata' });
+      return res.status(400).json({ status: false, error: 'invalid Link or user status' });
     }
 
     if (meta.payload.msisdn !== watch.msisdn) {
       await watch.addFraud('msisdn_mismatch', { expected: watch.msisdn, got: meta.payload.msisdn });
       logger.error(`WatchLinkController.getVideoByToken - msisdn mismatch for token ${token}, expected ${watch.msisdn}, got ${meta.payload.msisdn}`);
-      return res.status(403).json({ status: false, error: 'msisdn mismatch' });
+      return res.status(403).json({ status: false, error: 'invalid Link or user status' });
     }
 
     const ip = meta.payload.ip || req.ip;
@@ -175,8 +175,8 @@ exports.getVideoByToken = async (req, res, next) => {
     const changed = watch.detectChange({ ip, userAgent: ua, location: meta.payload.location });
     if (changed) {
       await watch.addFraud('device_change', { ip, userAgent: ua });
-      logger.error(`WatchLinkController.getVideoByToken - Device or IP changed for token ${token}`);
-      return res.status(403).json({ status: false, error: 'device or ip changed; rewatch required' });
+      logger.info(`WatchLinkController.getVideoByToken - Device or IP changed for token ${token}`);
+      // return res.status(403).json({ status: false, error: 'device or ip changed; rewatch required' });
     }
 
     // --- Secure Key Generation ---

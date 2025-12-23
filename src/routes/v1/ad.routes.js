@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+
 // Ensure upload directory exists
 const uploadDir = path.join(__dirname, '../../public/uploaded_videos');
 if (!fs.existsSync(uploadDir)) {
@@ -13,9 +14,7 @@ if (!fs.existsSync(uploadDir)) {
 
 // Multer storage config
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
+    destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
         const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
         const ext = path.extname(file.originalname);
@@ -25,11 +24,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// ------------------------------
-// AD ROUTES
-// ------------------------------
-
-// CREATE AD (with file upload)
+// Multer parses the FormData fields automatically into req.body
 router.post('/create', upload.single('video'), AdController.createWithUpload);
 
 // APPROVE AD
@@ -41,23 +36,11 @@ router.get('/list', AdController.list);
 // UPDATE AD
 router.put('/:adId', AdController.update);
 
+
+// GET /api/v1/ad/video/:adId
+router.get('/video/:adId', AdController.getVideo);
+
+
+router.get('/marketer/:marketerId', AdController.listByMarketer);
+
 module.exports = router;
-
-// const express = require('express');
-// const router = express.Router();
-// const AdController = require('../../controllers/ad.controller');
-
-// // POST /api/v1/ad/create
-// router.post('/create', AdController.create);
-
-// // POST /api/v1/ad/approve
-// router.post('/approve', AdController.approve);
-
-// // GET /api/v1/ad/list
-// router.get('/list', AdController.list);
-
-// // PUT /api/v1/ad/:adId
-// router.put('/:adId', AdController.update);
-
-
-// module.exports = router;

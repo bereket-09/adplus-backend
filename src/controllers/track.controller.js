@@ -78,7 +78,7 @@ exports.start = async (req, res, next) => {
     }
 
     if (watch.expires_at < new Date()) {
-      return res.status(410).json({ status: false, error: 'token expired' });
+      return res.status(410).json({ status: false, error: 'Link Expired' });
     }
 
     const metaDecoded = Meta.decodeAndValidate(meta);

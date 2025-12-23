@@ -1,6 +1,7 @@
 const Marketer = require('../models/marketer.model');
 const bcrypt = require('bcryptjs');
 const logger = require('../utils/logger'); // <-- import logger
+const jwt = require("jsonwebtoken");
 
 exports.create = async (req, res, next) => {
   try {
@@ -137,149 +138,68 @@ exports.update = async (req, res, next) => {
   }
 };
 
-// const Marketer = require('../models/marketer.model');
-// const bcrypt = require('bcryptjs');
+exports.login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
 
-// exports.create = async (req, res, next) => {
-//   try {
-//     const { name, email, password, total_budget, contact_info, status } = req.body;
+    logger.info(`MarketerController.login - Login attempt for: ${email}`);
 
-//     // Check if email already exists
-//     const existing = await Marketer.findOne({ email });
-//     if (existing) {
-//       return res.status(400).json({ status: false, error: 'Email already exists' });
-//     }
+    if (!email || !password) {
+      return res.status(400).json({
+        status: false,
+        error: "email and password required",
+      });
+    }
 
-//     // Hash password if provided
-//     let hashedPassword = null;
-//     if (password) {
-//       const salt = await bcrypt.genSalt(10);
-//       hashedPassword = await bcrypt.hash(password, salt);
-//     }
+    const marketer = await Marketer.findOne({ email });
+    if (!marketer) {
+      return res.status(404).json({
+        status: false,
+        error: "marketer not found or invalid credentials",
+      });
+    }
 
-//     const marketer = await Marketer.create({
-//       name,
-//       email,
-//       password: hashedPassword,
-//       total_budget,
-//       remaining_budget: total_budget,
-//       contact_info,
-//       status: status || 'pendingPassChange', // default to pendingPassChange
-//       created_at: new Date()
-//     });
+    if (!marketer.password) {
+      return res.status(400).json({
+        status: false,
+        error: "Account has no password set",
+      });
+    }
 
-//     res.json({ status: true, marketer });
-//   } catch (err) {
-//     // Handle unique index error gracefully (fallback)
-//     if (err.code === 11000 && err.keyPattern && err.keyPattern.email) {
-//       return res.status(400).json({ status: false, error: 'Email already exists' });
-//     }
-//     next(err);
-//   }
-// };
+    const valid = await bcrypt.compare(password, marketer.password);
+    if (!valid) {
+      return res.status(401).json({
+        status: false,
+        error: "marketer not found or invalid credentials",
+      });
+    }
 
+    const token = jwt.sign(
+      {
+        user_id: marketer._id,
+        role: "marketer",
+        email: marketer.email,
+        name: marketer.name,
+        status: marketer.status,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }
+    );
 
-// exports.updatePassword = async (req, res, next) => {
-//   try {
-//     const { userId, password } = req.body;
-//     if (!userId || !password) return res.status(400).json({ status: false, error: 'userId and password required' });
+    logger.info(`MarketerController.login - Login success: ${marketer._id}`);
 
-//     const marketer = await Marketer.findById(userId);
-//     if (!marketer) return res.status(404).json({ status: false, error: 'marketer not found' });
-
-//     const salt = await bcrypt.genSalt(10);
-//     const hashedPassword = await bcrypt.hash(password, salt);
-
-//     marketer.password = hashedPassword;
-//     if (marketer.status === 'pendingPassChange') marketer.status = 'active';
-
-//     await marketer.save();
-//     res.json({ status: true, message: 'Password updated', marketer });
-//   } catch (err) {
-//     next(err);
-//   }
-// };
-
-// exports.get = async (req, res, next) => {
-//   try {
-//     const marketer = await Marketer.findById(req.params.id);
-//     if (!marketer) return res.status(404).json({ status: false, error: 'not found' });
-//     res.json({ status: true, marketer });
-//   } catch (err) { next(err); }
-// };
-
-// exports.list = async (req, res, next) => {
-//   try {
-//     const marketers = await Marketer.find({});
-//     res.json({ status: true, marketers });
-//   } catch (err) { next(err); }
-// };
-
-// exports.update = async (req, res, next) => {
-//   try {
-//     const { userId } = req.params;
-//     const { name, email, total_budget, contact_info, status } = req.body;
-
-//     const marketer = await Marketer.findById(userId);
-//     if (!marketer) return res.status(404).json({ status: false, error: 'marketer not found' });
-
-//     // Prevent duplicate email
-//     if (email && email !== marketer.email) {
-//       const existing = await Marketer.findOne({ email });
-//       if (existing) {
-//         return res.status(400).json({ status: false, error: 'Email already exists' });
-//       }
-//       marketer.email = email;
-//     }
-
-//     // Update other fields if provided
-//     if (name) marketer.name = name;
-//     if (total_budget) {
-//       marketer.total_budget = total_budget;
-//       // Adjust remaining_budget if necessary
-//       marketer.remaining_budget = Math.min(marketer.remaining_budget, total_budget);
-//     }
-//     if (contact_info) marketer.contact_info = contact_info;
-//     if (status) marketer.status = status;
-
-//     await marketer.save();
-
-//     res.json({ status: true, message: 'Marketer updated', marketer });
-//   } catch (err) {
-//     next(err);
-//   }
-// };
-// exports.update = async (req, res, next) => {
-//   try {
-//     const { userId } = req.params;
-//     const { name, email, total_budget, contact_info, status } = req.body;
-
-//     const marketer = await Marketer.findById(userId);
-//     if (!marketer) return res.status(404).json({ status: false, error: 'marketer not found' });
-
-//     // Prevent duplicate email
-//     if (email && email !== marketer.email) {
-//       const existing = await Marketer.findOne({ email });
-//       if (existing) {
-//         return res.status(400).json({ status: false, error: 'Email already exists' });
-//       }
-//       marketer.email = email;
-//     }
-
-//     // Update other fields if provided
-//     if (name) marketer.name = name;
-//     if (total_budget) {
-//       marketer.total_budget = total_budget;
-//       // Adjust remaining_budget if necessary
-//       marketer.remaining_budget = Math.min(marketer.remaining_budget, total_budget);
-//     }
-//     if (contact_info) marketer.contact_info = contact_info;
-//     if (status) marketer.status = status;
-
-//     await marketer.save();
-
-//     res.json({ status: true, message: 'Marketer updated', marketer });
-//   } catch (err) {
-//     next(err);
-//   }
-// };
+    res.json({
+      status: true,
+      token,
+      marketer: {
+        id: marketer._id,
+        name: marketer.name,
+        email: marketer.email,
+        status: marketer.status
+      }
+    });
+  } catch (err) {
+    logger.error(`MarketerController.login - Error: ${err.message}`);
+    next(err);
+  }
+};
