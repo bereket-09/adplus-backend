@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "description": "MVP backend for short video ads - JSON API only",
   "main": "server.js",
+
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "dependencies": {
     "axios": "^1.7.9",
