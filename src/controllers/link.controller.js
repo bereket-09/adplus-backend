@@ -163,11 +163,11 @@ exports.getVideoByToken = async (req, res, next) => {
       return res.status(400).json({ status: false, error: 'invalid Link or user status' });
     }
 
-    if (meta.payload.msisdn !== watch.msisdn) {
-      await watch.addFraud('msisdn_mismatch', { expected: watch.msisdn, got: meta.payload.msisdn });
-      logger.error(`WatchLinkController.getVideoByToken - msisdn mismatch for token ${token}, expected ${watch.msisdn}, got ${meta.payload.msisdn}`);
-      return res.status(403).json({ status: false, error: 'invalid Link or user status' });
-    }
+    // if (meta.payload.msisdn !== watch.msisdn) {
+    //   await watch.addFraud('msisdn_mismatch', { expected: watch.msisdn, got: meta.payload.msisdn });
+    //   logger.error(`WatchLinkController.getVideoByToken - msisdn mismatch for token ${token}, expected ${watch.msisdn}, got ${meta.payload.msisdn}`);
+    //   return res.status(403).json({ status: false, error: 'invalid Link or user status' });
+    // }
 
     const ip = meta.payload.ip || req.ip;
     const ua = meta.payload.userAgent || '';
@@ -206,7 +206,7 @@ exports.getVideoByToken = async (req, res, next) => {
     });
 
     const ad = await Ad.findById(watch.ad_id);
-    const video_url = (process.env.CDN_DOMAIN || '') + (ad && ad.video_file_path ? ('/' + ad.video_file_path.replace(/^\/+/, '')) : '/ads/default.mp4');
+    const video_url = (ad && ad.video_file_path) ? ad.video_file_path : '';
 
     logger.info(`WatchLinkController.getVideoByToken - Video URL generated for token ${token}, msisdn ${watch.msisdn}`);
 

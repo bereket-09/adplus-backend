@@ -197,7 +197,7 @@ exports.getVideo = async (req, res, next) => {
 exports.approve = async (req, res, next) => {
   try {
 
-    console.log("🚀 ~ req.body:", req.body)
+    // console.log("🚀 ~ req.body:", req.body)
     const { ad_id, performed_by } = req.body;
 
     logger.info(`AdController.approve - Approving ad ${ad_id}`);

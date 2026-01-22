@@ -23,9 +23,10 @@ exports.selectAd = async (msisdn) => {
   const activeAds = await Ad.find({
     status: 'active',
     remaining_budget: { $gt: 0 },
-    start_date: { $lte: now },
-    end_date: { $gte: now },
+    // start_date: { $lte: now },
+    // end_date: { $gte: now },
   }).sort({ created_at: 1 });
+  console.log("🚀 ~ activeAds:", activeAds)
 
   if (!activeAds.length) return null;
 
