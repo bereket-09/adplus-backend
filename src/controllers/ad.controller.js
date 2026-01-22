@@ -2,19 +2,18 @@ const Ad = require('../models/ad.model');
 const Marketer = require('../models/marketer.model');
 const SystemChangeAudit = require('../models/systemChangeAudit.model');
 const logger = require('../utils/logger');
-const path = require("path");
-const fs = require("fs");
+const { createClient } = require('@supabase/supabase-js');
+const fs = require('fs');
+const path = require('path');
+
+// Initialize Supabase client
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 /**
- * CREATE AD + FILE UPLOAD
- * Handles video upload, renames file using AD ID, validates marketer & budget.
+ * CREATE AD + VIDEO UPLOAD TO SUPABASE
  */
 exports.createWithUpload = async (req, res, next) => {
   try {
-    // console.log("🚀 Headers:", req.headers);
-    // console.log("🚀 req.body:", req.body);
-    // console.log("🚀 req.file:", req.file);
-
     const {
       marketer_id,
       campaign_name,
@@ -24,11 +23,12 @@ exports.createWithUpload = async (req, res, next) => {
       description,
       start_date,
       end_date
-    } = req.body; // Multer has already populated this
+    } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ status: false, error: "Video file is required" });
     }
+
     // 1. Validate marketer
     const marketer = await Marketer.findById(marketer_id);
     if (!marketer) {
@@ -50,18 +50,7 @@ exports.createWithUpload = async (req, res, next) => {
       remaining_budget = budgetNum;
     }
 
-    // 3. Validate file upload
-    if (!req.file) {
-      logger.error("No video file uploaded");
-      return res.status(400).json({
-        status: false,
-        error: "Video file is required"
-      });
-    }
-
-    const tempFilename = req.file.filename; // temporary filename from multer
-
-    // 4. Create Ad record before renaming video
+    // 3. Create Ad record
     const ad = await Ad.create({
       marketer_id,
       campaign_name,
@@ -70,34 +59,145 @@ exports.createWithUpload = async (req, res, next) => {
       budget_allocation: budget_allocation || null,
       remaining_budget,
       description,
-      video_file_path: null, // assigned after rename
+      video_file_path: null,
       start_date,
       end_date,
       status: "pending_approval",
       created_at: new Date()
     });
 
-    // 5. Rename uploaded file → <adId>-<originalname>
-    const uploadFolder = path.join(__dirname, "..", "public", "uploaded_videos");
-    const oldPath = path.join(uploadFolder, tempFilename);
+    // 4. Upload file to Supabase
+    const tempFilePath = req.file.path;
+    const fileExt = path.extname(req.file.originalname);
+    const supabaseFileName = `${ad._id}-${Date.now()}${fileExt}`;
 
-    const newFileName = `${ad._id}-${tempFilename}`;
-    const newPath = path.join(uploadFolder, newFileName);
+    const { data, error: uploadError } = await supabase.storage
+      .from('videos')
+      .upload(supabaseFileName, fs.createReadStream(tempFilePath), {
+        contentType: req.file.mimetype,
+        upsert: false
+      });
 
-    fs.renameSync(oldPath, newPath);
+    // Remove temp file
+    fs.unlinkSync(tempFilePath);
 
-    // 6. Save final video_path
-    ad.video_file_path = `/uploaded_videos/${newFileName}`;
+    if (uploadError) {
+      logger.error(`Supabase upload error: ${uploadError.message}`);
+      return res.status(500).json({ status: false, error: "Failed to upload video" });
+    }
+
+    // 5. Get public URL
+    const { publicUrl, error: urlError } = supabase.storage
+      .from('videos')
+      .getPublicUrl(supabaseFileName);
+
+    if (urlError) {
+      logger.error(`Supabase getPublicUrl error: ${urlError.message}`);
+      return res.status(500).json({ status: false, error: "Failed to get video URL" });
+    }
+
+    // 6. Save URL in Ad
+    ad.video_file_path = publicUrl;
     await ad.save();
 
     logger.info(`Ad created successfully: ${ad._id}`);
-
     res.json({ status: true, ad });
+
   } catch (err) {
     logger.error(`AdController.createWithUpload - Error: ${err.message}`);
     next(err);
   }
 };
+
+/**
+ * UPDATE AD + OPTIONAL VIDEO REPLACEMENT
+ */
+exports.update = async (req, res, next) => {
+  try {
+    const { adId } = req.params;
+    const ad = await Ad.findById(adId);
+    if (!ad) return res.status(404).json({ status: false, error: 'Ad not found' });
+
+    const oldValues = { ...ad.toObject() };
+    const changedFields = {};
+
+    const fields = [
+      "title", "campaign_name", "cost_per_view", "budget_allocation",
+      "description", "start_date", "end_date", "status"
+    ];
+
+    fields.forEach((field) => {
+      if (req.body[field] && req.body[field] !== ad[field]) {
+        changedFields[field] = { old: ad[field], new: req.body[field] };
+        ad[field] = req.body[field];
+      }
+    });
+
+    // Handle new video
+    if (req.file) {
+      const tempFilePath = req.file.path;
+      const fileExt = path.extname(req.file.originalname);
+      const supabaseFileName = `${ad._id}-${Date.now()}${fileExt}`;
+
+      // Delete old file from Supabase (optional)
+      if (ad.video_file_path) {
+        const oldFile = ad.video_file_path.split('/').pop();
+        await supabase.storage.from('videos').remove([oldFile]);
+      }
+
+      const { error: uploadError } = await supabase.storage
+        .from('videos')
+        .upload(supabaseFileName, fs.createReadStream(tempFilePath), {
+          contentType: req.file.mimetype,
+          upsert: false
+        });
+
+      fs.unlinkSync(tempFilePath);
+
+      if (uploadError) return res.status(500).json({ status: false, error: "Failed to upload video" });
+
+      const { publicUrl } = supabase.storage.from('videos').getPublicUrl(supabaseFileName);
+      ad.video_file_path = publicUrl;
+      changedFields.video_file_path = { old: oldValues.video_file_path, new: ad.video_file_path };
+    }
+
+    await ad.save();
+
+    if (Object.keys(changedFields).length > 0) {
+      await SystemChangeAudit.create({
+        entity_type: 'ad',
+        entity_id: ad._id,
+        action: "update",
+        changed_fields: changedFields,
+        performed_by: req.body.performed_by
+      });
+    }
+
+    res.json({ status: true, ad });
+  } catch (err) {
+    logger.error(`AdController.update - Error: ${err.message}`);
+    next(err);
+  }
+};
+
+/**
+ * GET VIDEO FILE (redirect to Supabase public URL)
+ */
+exports.getVideo = async (req, res, next) => {
+  try {
+    const { adId } = req.params;
+    const ad = await Ad.findById(adId);
+    if (!ad || !ad.video_file_path) return res.status(404).json({ status: false, error: 'Video not found' });
+
+    // Since bucket is public, just redirect
+    res.redirect(ad.video_file_path);
+  } catch (err) {
+    logger.error(`AdController.getVideo - ${err.message}`);
+    next(err);
+  }
+};
+
+
 
 /**
  * APPROVE AD
@@ -148,135 +248,6 @@ exports.list = async (req, res, next) => {
     res.json({ status: true, ads });
   } catch (err) {
     logger.error(`AdController.list - ${err.message}`);
-    next(err);
-  }
-};
-
-/**
- * UPDATE AD + OPTIONAL FILE REPLACEMENT
- */
-exports.update = async (req, res, next) => {
-  try {
-    const { adId } = req.params;
-
-    const ad = await Ad.findById(adId);
-    if (!ad) {
-      return res.status(404).json({ status: false, error: 'Ad not found' });
-    }
-
-    const oldValues = { ...ad.toObject() };
-    const changedFields = {};
-
-    const fields = [
-      "title", "campaign_name", "cost_per_view", "budget_allocation",
-      "description", "start_date", "end_date", "status"
-    ];
-
-    fields.forEach((field) => {
-      if (req.body[field] && req.body[field] !== ad[field]) {
-        changedFields[field] = { old: ad[field], new: req.body[field] };
-        ad[field] = req.body[field];
-      }
-    });
-
-    // If a new video is uploaded
-    if (req.file) {
-      const uploadFolder = path.join(__dirname, "..", "public", "uploaded_videos");
-
-      // Remove old file if exists
-      if (ad.video_file_path) {
-        const oldFile = path.join(uploadFolder, path.basename(ad.video_file_path));
-        if (fs.existsSync(oldFile)) fs.unlinkSync(oldFile);
-      }
-
-      const newFileName = `${ad._id}-${req.file.filename}`;
-      const newPath = path.join(uploadFolder, newFileName);
-
-      // Move uploaded temp file
-      fs.renameSync(req.file.path, newPath);
-
-      ad.video_file_path = `/uploaded_videos/${newFileName}`;
-      changedFields.video_file_path = {
-        old: oldValues.video_file_path,
-        new: ad.video_file_path
-      };
-    }
-
-    await ad.save();
-
-    if (Object.keys(changedFields).length > 0) {
-      await SystemChangeAudit.create({
-        entity_type: 'ad',
-        entity_id: ad._id,
-        action: "update",
-        changed_fields: changedFields,
-        performed_by: req.body.performed_by
-      });
-    }
-
-    res.json({ status: true, ad });
-  } catch (err) {
-    logger.error(`AdController.update - Error: ${err.message}`);
-    next(err);
-  }
-};
-
-
-/**
-* GET VIDEO FILE
-* Streams the video for the given ad ID
-*/
-exports.getVideo = async (req, res, next) => {
-  try {
-    logger.info(`AdController.getVideo - Fetching video for ad ${req.params.adId}`);
-
-    if (!req.params.adId) {
-      return res.status(400).json({ status: false, error: 'Ad ID is required' });
-    }
-    const { adId } = req.params;
-
-    const ad = await Ad.findById(adId);
-    if (!ad || !ad.video_file_path) {
-      return res.status(404).json({ status: false, error: 'Video not found' });
-    }
-
-    const videoPath = path.join(__dirname, '..', 'public', ad.video_file_path);
-
-    if (!fs.existsSync(videoPath)) {
-      return res.status(404).json({ status: false, error: 'Video file missing on server' });
-    }
-
-    // Set headers for streaming
-    const stat = fs.statSync(videoPath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    if (range) {
-      // Partial content requested (for streaming)
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = (end - start) + 1;
-      const file = fs.createReadStream(videoPath, { start, end });
-      const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': 'video/mp4',
-      };
-      res.writeHead(206, head);
-      file.pipe(res);
-    } else {
-      // Full video
-      res.writeHead(200, {
-        'Content-Length': fileSize,
-        'Content-Type': 'video/mp4',
-      });
-      fs.createReadStream(videoPath).pipe(res);
-    }
-
-  } catch (err) {
-    logger.error(`AdController.getVideo - ${err.message}`);
     next(err);
   }
 };
