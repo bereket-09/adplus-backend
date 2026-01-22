@@ -3,7 +3,6 @@ const Marketer = require('../models/marketer.model');
 const SystemChangeAudit = require('../models/systemChangeAudit.model');
 const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
-const fs = require('fs');
 const path = require('path');
 
 // Initialize Supabase client
@@ -29,28 +28,24 @@ exports.createWithUpload = async (req, res, next) => {
       return res.status(400).json({ status: false, error: "Video file is required" });
     }
 
-    // 1. Validate marketer
+    // 1️⃣ Validate marketer
     const marketer = await Marketer.findById(marketer_id);
     if (!marketer) {
       logger.error(`Marketer ${marketer_id} not found`);
       return res.status(404).json({ status: false, error: "Marketer not found" });
     }
 
-    // 2. Validate budget
+    // 2️⃣ Validate budget
     let remaining_budget = null;
     if (budget_allocation && !isNaN(Number(budget_allocation))) {
       const budgetNum = Number(budget_allocation);
       if (marketer.remaining_budget < budgetNum) {
-        logger.error("Insufficient marketer budget");
-        return res.status(400).json({
-          status: false,
-          error: "Insufficient remaining budget"
-        });
+        return res.status(400).json({ status: false, error: "Insufficient remaining budget" });
       }
       remaining_budget = budgetNum;
     }
 
-    // 3. Create Ad record
+    // 3️⃣ Create Ad record
     const ad = await Ad.create({
       marketer_id,
       campaign_name,
@@ -66,28 +61,23 @@ exports.createWithUpload = async (req, res, next) => {
       created_at: new Date()
     });
 
-    // 4. Upload file to Supabase
-    const tempFilePath = req.file.path;
+    // 4️⃣ Upload file to Supabase (memory storage)
     const fileExt = path.extname(req.file.originalname);
     const supabaseFileName = `${ad._id}-${Date.now()}${fileExt}`;
 
-    const { data, error: uploadError } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from('videos')
-      .upload(supabaseFileName, fs.createReadStream(tempFilePath), {
+      .upload(supabaseFileName, req.file.buffer, {
         contentType: req.file.mimetype,
-        upsert: false
       });
-
-    // Remove temp file
-    fs.unlinkSync(tempFilePath);
 
     if (uploadError) {
       logger.error(`Supabase upload error: ${uploadError.message}`);
       return res.status(500).json({ status: false, error: "Failed to upload video" });
     }
 
-    // 5. Get public URL
-    const { publicUrl, error: urlError } = supabase.storage
+    // 5️⃣ Get public URL
+    const { data: urlData, error: urlError } = supabase.storage
       .from('videos')
       .getPublicUrl(supabaseFileName);
 
@@ -96,8 +86,8 @@ exports.createWithUpload = async (req, res, next) => {
       return res.status(500).json({ status: false, error: "Failed to get video URL" });
     }
 
-    // 6. Save URL in Ad
-    ad.video_file_path = publicUrl;
+    // 6️⃣ Save URL in Ad
+    ad.video_file_path = urlData.publicUrl;
     await ad.save();
 
     logger.info(`Ad created successfully: ${ad._id}`);
@@ -133,9 +123,8 @@ exports.update = async (req, res, next) => {
       }
     });
 
-    // Handle new video
+    // 🔄 Handle new video
     if (req.file) {
-      const tempFilePath = req.file.path;
       const fileExt = path.extname(req.file.originalname);
       const supabaseFileName = `${ad._id}-${Date.now()}${fileExt}`;
 
@@ -147,17 +136,14 @@ exports.update = async (req, res, next) => {
 
       const { error: uploadError } = await supabase.storage
         .from('videos')
-        .upload(supabaseFileName, fs.createReadStream(tempFilePath), {
+        .upload(supabaseFileName, req.file.buffer, {
           contentType: req.file.mimetype,
-          upsert: false
         });
-
-      fs.unlinkSync(tempFilePath);
 
       if (uploadError) return res.status(500).json({ status: false, error: "Failed to upload video" });
 
-      const { publicUrl } = supabase.storage.from('videos').getPublicUrl(supabaseFileName);
-      ad.video_file_path = publicUrl;
+      const { data: urlData } = supabase.storage.from('videos').getPublicUrl(supabaseFileName);
+      ad.video_file_path = urlData.publicUrl;
       changedFields.video_file_path = { old: oldValues.video_file_path, new: ad.video_file_path };
     }
 
