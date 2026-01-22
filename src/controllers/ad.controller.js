@@ -4,7 +4,7 @@ const SystemChangeAudit = require('../models/systemChangeAudit.model');
 const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
-
+const fs = require("fs");
 // Initialize Supabase client
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
