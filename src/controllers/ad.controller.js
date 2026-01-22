@@ -61,20 +61,26 @@ exports.createWithUpload = async (req, res, next) => {
       created_at: new Date()
     });
 
-    // 4️⃣ Upload file to Supabase (memory storage)
+    // 4️⃣ Upload file to Supabase (disk storage)
     const fileExt = path.extname(req.file.originalname);
     const supabaseFileName = `${ad._id}-${Date.now()}${fileExt}`;
 
+    const fileStream = fs.createReadStream(req.file.path);
+
     const { error: uploadError } = await supabase.storage
       .from('videos')
-      .upload(supabaseFileName, req.file.buffer, {
+      .upload(supabaseFileName, fileStream, {
         contentType: req.file.mimetype,
       });
+
+    // Remove temp file
+    fs.unlinkSync(req.file.path);
 
     if (uploadError) {
       logger.error(`Supabase upload error: ${uploadError.message}`);
       return res.status(500).json({ status: false, error: "Failed to upload video" });
     }
+
 
     // 5️⃣ Get public URL
     const { data: urlData, error: urlError } = supabase.storage
