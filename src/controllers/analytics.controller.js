@@ -180,16 +180,18 @@ exports.getSingleAdDetail = async (req, res, next) => {
         const heatmapData = Object.values(heatmapAcc);
 
         // --------------------------------------------------------------------
-        // DEVICE TYPE DISTRIBUTION (from meta_json.deviceInfo)
+        // DEVICE TYPE DISTRIBUTION (from meta_json.device.type)
         // --------------------------------------------------------------------
-        const deviceCounters = { Mobile: 0, Tablet: 0, Desktop: 0 };
+        const deviceCounters = { mobile: 0, tablet: 0, desktop: 0 };
 
         for (const w of watchSessions) {
-            const category = w.meta_json?.deviceInfo?.category || "Mobile";
-            if (deviceCounters[category] !== undefined) deviceCounters[category]++;
+            const type = w.meta_json?.device?.type?.toLowerCase() || "mobile";
+            if (deviceCounters[type] !== undefined) deviceCounters[type]++;
         }
 
+        // Optional: total devices for percentage calculation
         const totalDevices = Object.values(deviceCounters).reduce((a, b) => a + b, 0) || 1;
+
 
         // Include only devices with value > 0
         const deviceData = Object.entries(deviceCounters)
@@ -494,116 +496,116 @@ exports.getRewardsAnalytics = async (req, res, next) => {
  * GET /api/v1/analytics/marketer/:marketerId?period=7|30|90
  */
 exports.getMarketerReports = async (req, res, next) => {
-  try {
-    const { marketerId } = req.params;
-    const period = parseInt(req.query.period) || 30; // default last 30 days
+    try {
+        const { marketerId } = req.params;
+        const period = parseInt(req.query.period) || 30; // default last 30 days
 
-    logger.info(`Fetching reports for marketer: ${marketerId}, last ${period} days`);
+        logger.info(`Fetching reports for marketer: ${marketerId}, last ${period} days`);
 
-    const marketer = await Marketer.findById(marketerId);
-    if (!marketer) return res.status(404).json({ status: false, message: "Marketer not found" });
+        const marketer = await Marketer.findById(marketerId);
+        if (!marketer) return res.status(404).json({ status: false, message: "Marketer not found" });
 
-    const ads = await Ad.find({ marketer_id: marketerId });
-    const adIds = ads.map(a => a._id);
+        const ads = await Ad.find({ marketer_id: marketerId });
+        const adIds = ads.map(a => a._id);
 
-    const sinceDate = new Date();
-    sinceDate.setDate(sinceDate.getDate() - period);
+        const sinceDate = new Date();
+        sinceDate.setDate(sinceDate.getDate() - period);
 
-    const watchSessions = await WatchLink.find({
-      ad_id: { $in: adIds },
-      created_at: { $gte: sinceDate },
-    });
+        const watchSessions = await WatchLink.find({
+            ad_id: { $in: adIds },
+            created_at: { $gte: sinceDate },
+        });
 
-    const smsCount = await AuditLog.countDocuments({
-      ad_id: { $in: adIds },
-      type: "sms_sent",
-      created_at: { $gte: sinceDate },
-    });
+        const smsCount = await AuditLog.countDocuments({
+            ad_id: { $in: adIds },
+            type: "sms_sent",
+            created_at: { $gte: sinceDate },
+        });
 
-    // Aggregated metrics
-    const totalViews = watchSessions.length;
-    const completedViews = watchSessions.filter(w => w.status === "completed").length;
-    const startedViews = watchSessions.filter(w => ["started", "completed"].includes(w.status)).length;
-    const openedViews = watchSessions.filter(w => ["opened", "started", "completed"].includes(w.status)).length;
-    const pendingViews = watchSessions.filter(w => w.status === "pending").length;
-    const completionRate = totalViews === 0 ? 0 : (completedViews / totalViews) * 100;
+        // Aggregated metrics
+        const totalViews = watchSessions.length;
+        const completedViews = watchSessions.filter(w => w.status === "completed").length;
+        const startedViews = watchSessions.filter(w => ["started", "completed"].includes(w.status)).length;
+        const openedViews = watchSessions.filter(w => ["opened", "started", "completed"].includes(w.status)).length;
+        const pendingViews = watchSessions.filter(w => w.status === "pending").length;
+        const completionRate = totalViews === 0 ? 0 : (completedViews / totalViews) * 100;
 
-    const totalBudget = ads.reduce((sum, ad) => sum + (ad.budget_allocation || 0), 0);
-    const spent = watchSessions.reduce((sum, w) => {
-      const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
-      return sum + (w.status === "completed" ? (ad?.cost_per_view || 0) : 0);
-    }, 0);
-    const remainingBudget = Math.max(totalBudget - spent, 0);
-    const usagePercent = totalBudget > 0 ? (spent / totalBudget) * 100 : 0;
+        const totalBudget = ads.reduce((sum, ad) => sum + (ad.budget_allocation || 0), 0);
+        const spent = watchSessions.reduce((sum, w) => {
+            const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
+            return sum + (w.status === "completed" ? (ad?.cost_per_view || 0) : 0);
+        }, 0);
+        const remainingBudget = Math.max(totalBudget - spent, 0);
+        const usagePercent = totalBudget > 0 ? (spent / totalBudget) * 100 : 0;
 
-    // Daily trend
-    const dailyMap = {};
-    for (const w of watchSessions) {
-      const date = new Date(w.created_at).toISOString().slice(0, 10);
-      if (!dailyMap[date]) dailyMap[date] = { date, views: 0, completions: 0, spend: 0 };
-      dailyMap[date].views++;
-      if (w.status === "completed") {
-        const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
-        dailyMap[date].completions++;
-        dailyMap[date].spend += ad?.cost_per_view || 0;
-      }
+        // Daily trend
+        const dailyMap = {};
+        for (const w of watchSessions) {
+            const date = new Date(w.created_at).toISOString().slice(0, 10);
+            if (!dailyMap[date]) dailyMap[date] = { date, views: 0, completions: 0, spend: 0 };
+            dailyMap[date].views++;
+            if (w.status === "completed") {
+                const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
+                dailyMap[date].completions++;
+                dailyMap[date].spend += ad?.cost_per_view || 0;
+            }
+        }
+        const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
+
+        // Funnel
+        const funnelData = [
+            { label: "SMS Sent", value: smsCount },
+            { label: "Link Clicked", value: openedViews },
+            { label: "Video Started", value: startedViews },
+            { label: "Video Completed", value: completedViews },
+        ];
+
+        // Heatmap
+        const heatmapAcc = {};
+        for (const w of watchSessions) {
+            const dt = new Date(w.created_at);
+            const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dt.getDay()];
+            const hour = dt.getHours();
+            const key = `${day}-${hour}`;
+            if (!heatmapAcc[key]) heatmapAcc[key] = { day, hour, value: 0 };
+            heatmapAcc[key].value++;
+        }
+        const heatmapData = Object.values(heatmapAcc);
+
+        // Device distribution
+        const deviceCounters = { Mobile: 0, Tablet: 0, Desktop: 0 };
+        for (const w of watchSessions) {
+            const category = w.meta_json?.deviceInfo?.category || "Mobile";
+            if (deviceCounters[category] !== undefined) deviceCounters[category]++;
+        }
+        const totalDevices = Object.values(deviceCounters).reduce((a, b) => a + b, 0) || 1;
+        const deviceData = Object.entries(deviceCounters)
+            .map(([name, count]) => ({ name, value: Math.round((count / totalDevices) * 100) }))
+            .filter(d => d.value > 0);
+
+        // Hourly
+        const hourlyMap = Array.from({ length: 24 }, (_, h) => ({ hour: `${h.toString().padStart(2, "0")}:00`, views: 0, completions: 0 }));
+        for (const w of watchSessions) {
+            const hour = new Date(w.created_at).getHours();
+            hourlyMap[hour].views++;
+            if (w.status === "completed") hourlyMap[hour].completions++;
+        }
+
+        res.json({
+            status: true,
+            marketerId,
+            marketerInfo: marketer,
+            adCount: ads.length,
+            total_views: totalViews,
+            opened_views: openedViews,
+            completed_views: completedViews,
+            pending_views: pendingViews,
+            completion_rate: completionRate,
+            budget: { spent, remaining_budget: remainingBudget, total_budget: totalBudget, usage_percent: usagePercent },
+            analytics: { sms_sent: smsCount, dailyData, funnelData, heatmapData, deviceData, hourlyData: hourlyMap }
+        });
+    } catch (err) {
+        logger.error(`AnalyticsController.getMarketerReports - Error: ${err.message}`);
+        next(err);
     }
-    const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
-
-    // Funnel
-    const funnelData = [
-      { label: "SMS Sent", value: smsCount },
-      { label: "Link Clicked", value: openedViews },
-      { label: "Video Started", value: startedViews },
-      { label: "Video Completed", value: completedViews },
-    ];
-
-    // Heatmap
-    const heatmapAcc = {};
-    for (const w of watchSessions) {
-      const dt = new Date(w.created_at);
-      const day = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
-      const hour = dt.getHours();
-      const key = `${day}-${hour}`;
-      if (!heatmapAcc[key]) heatmapAcc[key] = { day, hour, value: 0 };
-      heatmapAcc[key].value++;
-    }
-    const heatmapData = Object.values(heatmapAcc);
-
-    // Device distribution
-    const deviceCounters = { Mobile: 0, Tablet: 0, Desktop: 0 };
-    for (const w of watchSessions) {
-      const category = w.meta_json?.deviceInfo?.category || "Mobile";
-      if (deviceCounters[category] !== undefined) deviceCounters[category]++;
-    }
-    const totalDevices = Object.values(deviceCounters).reduce((a,b) => a+b,0) || 1;
-    const deviceData = Object.entries(deviceCounters)
-      .map(([name,count]) => ({ name, value: Math.round((count / totalDevices) * 100) }))
-      .filter(d => d.value > 0);
-
-    // Hourly
-    const hourlyMap = Array.from({ length: 24 }, (_, h) => ({ hour: `${h.toString().padStart(2,"0")}:00`, views: 0, completions: 0 }));
-    for (const w of watchSessions) {
-      const hour = new Date(w.created_at).getHours();
-      hourlyMap[hour].views++;
-      if (w.status === "completed") hourlyMap[hour].completions++;
-    }
-
-    res.json({
-      status: true,
-      marketerId,
-      marketerInfo: marketer,
-      adCount: ads.length,
-      total_views: totalViews,
-      opened_views: openedViews,
-      completed_views: completedViews,
-      pending_views: pendingViews,
-      completion_rate: completionRate,
-      budget: { spent, remaining_budget: remainingBudget, total_budget: totalBudget, usage_percent: usagePercent },
-      analytics: { sms_sent: smsCount, dailyData, funnelData, heatmapData, deviceData, hourlyData: hourlyMap }
-    });
-  } catch (err) {
-    logger.error(`AnalyticsController.getMarketerReports - Error: ${err.message}`);
-    next(err);
-  }
 };
