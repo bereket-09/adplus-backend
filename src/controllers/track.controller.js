@@ -81,7 +81,7 @@ exports.start = async (req, res, next) => {
       return res.status(410).json({ status: false, error: 'Link Expired' });
     }
 
-    const metaDecoded = Meta.decodeAndValidate(meta);
+    const metaDecoded = Meta.decodeAndValidate(meta,req);
     if (!metaDecoded.valid) {
       return res.status(400).json({ status: false, error: 'invalid metadata' });
     }
@@ -144,7 +144,7 @@ exports.complete = async (req, res, next) => {
       });
     }
 
-    const metaDecoded = Meta.decodeAndValidate(meta);
+    const metaDecoded = Meta.decodeAndValidate(meta,req);
     if (!metaDecoded.valid) {
       return res.status(400).json({ status: false, error: 'invalid metadata' });
     }

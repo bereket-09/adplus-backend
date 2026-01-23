@@ -156,7 +156,7 @@ exports.getVideoByToken = async (req, res, next) => {
       return res.status(410).json({ status: false, error: 'Shared Link expired or May have been Already Completed' });
     }
 
-    const meta = Meta.decodeAndValidate(metaBase64);
+    const meta = Meta.decodeAndValidate(metaBase64 , req);
     if (!meta.valid) {
       await watch.addAudit('opened', false, meta.report);
       logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}`);
