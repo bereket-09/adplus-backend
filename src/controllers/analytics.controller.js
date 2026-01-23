@@ -186,6 +186,7 @@ exports.getSingleAdDetail = async (req, res, next) => {
 
         for (const w of watchSessions) {
             const type = w.meta_json?.device?.type?.toLowerCase() || "mobile";
+            // console.log("🚀 ~ type:", type)
             if (deviceCounters[type] !== undefined) deviceCounters[type]++;
         }
 
