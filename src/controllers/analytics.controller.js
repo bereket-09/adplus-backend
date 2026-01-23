@@ -336,15 +336,22 @@ exports.getMarketerAnalytics = async (req, res, next) => {
         const heatmapData = Object.values(heatmapAcc);
 
         // Device type distribution
-        const deviceCounters = { Mobile: 0, Tablet: 0, Desktop: 0 };
+        const deviceCounters = { mobile: 0, tablet: 0, desktop: 0 };
+
         for (const w of watchSessions) {
-            const category = w.meta_json?.deviceInfo?.category || "Mobile";
-            if (deviceCounters[category] !== undefined) deviceCounters[category]++;
+            // fallback to "mobile" if meta_json or device type is missing
+            const type = w.meta_json?.device?.type?.toLowerCase() || "mobile";
+            if (deviceCounters[type] !== undefined) deviceCounters[type]++;
         }
+
         const totalDevices = Object.values(deviceCounters).reduce((a, b) => a + b, 0) || 1;
+
         const deviceData = Object.entries(deviceCounters)
             .map(([name, count]) => ({ name, value: Math.round((count / totalDevices) * 100) }))
             .filter(d => d.value >= 0);
+
+        // console.log("Device distribution:", deviceData);
+
 
         // Hourly data
         const hourlyMap = Array.from({ length: 24 }, (_, h) => ({ hour: `${h.toString().padStart(2, "0")}:00`, views: 0, completions: 0 }));

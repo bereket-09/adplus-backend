@@ -54,7 +54,7 @@ exports.decodeAndValidate = (base64Str, req = {}) => {
     }
 
 
-    console.log("🚀 ~ Meta.decodeAndValidate ~ payload:", payload);
+    // console.log("🚀 ~ Meta.decodeAndValidate ~ payload:", payload);
     return { valid: true, payload };
   } catch (e) {
     return { valid: false, report: e.message };

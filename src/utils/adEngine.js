@@ -26,7 +26,7 @@ exports.selectAd = async (msisdn) => {
     // start_date: { $lte: now },
     // end_date: { $gte: now },
   }).sort({ created_at: 1 });
-  console.log("🚀 ~ activeAds:", activeAds)
+  // console.log("🚀 ~ activeAds:", activeAds)
 
   if (!activeAds.length) return null;
 

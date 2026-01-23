@@ -157,11 +157,12 @@ exports.getVideoByToken = async (req, res, next) => {
     }
 
     const meta = Meta.decodeAndValidate(metaBase64 , req);
-    if (!meta.valid) {
-      await watch.addAudit('opened', false, meta.report);
-      logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}`);
-      return res.status(400).json({ status: false, error: 'invalid Link or user status' });
-    }
+    // console.log("🚀 ~ meta:", meta)
+    // if (!meta.valid) {
+    //   await watch.addAudit('opened', false, meta.report);
+    //   logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}`);
+    //   return res.status(400).json({ status: false, error: 'invalid Link or user status' });
+    // }
 
     // if (meta.payload.msisdn !== watch.msisdn) {
     //   await watch.addFraud('msisdn_mismatch', { expected: watch.msisdn, got: meta.payload.msisdn });
