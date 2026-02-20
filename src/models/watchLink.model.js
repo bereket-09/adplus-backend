@@ -6,9 +6,9 @@ const watchLinkSchema = new mongoose.Schema({
   msisdn: { type: String, required: true },
   ad_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Ad', required: true },
   marketer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Marketer', required: true },
-  status: { type: String, enum:['pending','opened','started','completed','expired'], default:'pending' },
+  status: { type: String, enum: ['pending', 'opened', 'started', 'completed', 'expired'], default: 'pending' },
   created_at: { type: Date, default: Date.now },
-  expires_at: { type: Date, default: () => new Date(Date.now() + 1000*60*60*3) }, // 3 hours TTL
+  expires_at: { type: Date, default: () => new Date(Date.now() + 1000 * 60 * 60 * 3) }, // 3 hours TTL
   opened_at: Date,
   started_at: Date,
   completed_at: Date,
@@ -18,13 +18,16 @@ const watchLinkSchema = new mongoose.Schema({
   device_info: Object,
   location: Object,
   meta_json: Object,
-  fraud_flags: [Object]
+  fraud_flags: [Object],
+  last_position: { type: Number, default: 0 },
+  max_position_reached: { type: Number, default: 0 },
+  drop_off_point: { type: Number }
 });
 
 // TTL Index
 watchLinkSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0 });
 
-watchLinkSchema.methods.addAudit = async function(type, fraud=false, details=null){
+watchLinkSchema.methods.addAudit = async function (type, fraud = false, details = null) {
   await AuditLog.create({
     type,
     msisdn: this.msisdn,
@@ -37,12 +40,12 @@ watchLinkSchema.methods.addAudit = async function(type, fraud=false, details=nul
   });
 };
 
-watchLinkSchema.methods.addFraud = function(reason, data){
+watchLinkSchema.methods.addFraud = function (reason, data) {
   this.fraud_flags.push({ reason, data, timestamp: new Date() });
   return this.save();
 };
 
-watchLinkSchema.methods.detectChange = function({ ip, userAgent, location }){
+watchLinkSchema.methods.detectChange = function ({ ip, userAgent, location }) {
   if (this.ip && this.ip !== ip) return true;
   if (this.user_agent && this.user_agent !== userAgent) return true;
   return false;

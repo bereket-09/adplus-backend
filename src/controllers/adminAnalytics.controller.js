@@ -7,6 +7,7 @@ const Reward = require('../models/reward.model');
 const Blacklist = require('../models/blacklist.model');
 const cache = require('../utils/internalCache');
 const AdEngine = require('../utils/adEngine');
+const MarketerTransaction = require('../models/marketerTransaction.model');
 
 exports.getAdminDashboardAnalytics = async (req, res, next) => {
     try {
@@ -562,3 +563,65 @@ exports.getAdminFraudAnalytics = async (req, res, next) => {
         next(err);
     }
 };
+
+/**
+ * Platform-wide budget and financial analytics for Admin
+ */
+exports.getAdminBudgetAnalytics = async (req, res, next) => {
+    try {
+        const [
+            totalTopUpsAgg,
+            totalDeductionsAgg,
+            platformBalanceAgg,
+            recentTransactions
+        ] = await Promise.all([
+            MarketerTransaction.aggregate([{ $match: { type: 'topup' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+            MarketerTransaction.aggregate([{ $match: { type: 'deduction' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+            Marketer.aggregate([{ $group: { _id: null, total: { $sum: '$remaining_budget' } } }]),
+            MarketerTransaction.find().sort({ created_at: -1 }).limit(50).populate('marketer_id', 'name')
+        ]);
+
+        const totalTopUps = totalTopUpsAgg[0]?.total || 0;
+        const totalDeductions = totalDeductionsAgg[0]?.total || 0;
+        const platformBalance = platformBalanceAgg[0]?.total || 0;
+
+        const revenueTrendAgg = await MarketerTransaction.aggregate([
+            { $match: { type: 'deduction' } },
+            {
+                $group: {
+                    _id: { year: { $year: "$created_at" }, month: { $month: "$created_at" } },
+                    amount: { $sum: "$amount" }
+                }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } },
+            { $limit: 6 }
+        ]);
+
+        const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const revenueTrend = revenueTrendAgg.map(r => ({
+            name: monthNames[r._id.month - 1],
+            revenue: r.amount
+        }));
+
+        res.json({
+            status: true,
+            kpis: {
+                total_revenue: totalDeductions,
+                total_topups: totalTopUps,
+                platform_balance: platformBalance
+            },
+            revenue_trend: revenueTrend,
+            recent_transactions: recentTransactions.map(t => ({
+                id: t._id,
+                marketer: t.marketer_id?.name || 'Deleted Marketer',
+                amount: t.amount,
+                type: t.type,
+                reason: t.reason,
+                timestamp: t.created_at
+            }))
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+

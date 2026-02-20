@@ -43,6 +43,41 @@ exports.create = async (req, res, next) => {
   }
 };
 
+exports.register = async (req, res, next) => {
+  try {
+    const { name, email, password, company_name, business_reg_number, business_address, contact_info } = req.body;
+    logger.info(`MarketerController.register - Registration attempt with email: ${email}`);
+
+    const existing = await Marketer.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ status: false, error: 'Email already exists' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const marketer = await Marketer.create({
+      name,
+      email,
+      password: hashedPassword,
+      company_name,
+      business_reg_number,
+      business_address,
+      contact_info,
+      status: 'pending',
+      total_budget: 0,
+      remaining_budget: 0,
+      created_at: new Date()
+    });
+
+    logger.info(`MarketerController.register - Marketer registered: ${marketer._id}`);
+    res.json({ status: true, message: 'Registration submitted successfully. Awaiting approval.' });
+  } catch (err) {
+    logger.error(`MarketerController.register - Error: ${err.message}`);
+    next(err);
+  }
+};
+
 exports.updatePassword = async (req, res, next) => {
   try {
     const { userId, password } = req.body;
@@ -141,17 +176,18 @@ exports.update = async (req, res, next) => {
 exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
+    const normalizedEmail = email?.toLowerCase().trim();
 
-    logger.info(`MarketerController.login - Login attempt for: ${email}`);
+    logger.info(`MarketerController.login - Login attempt for: ${normalizedEmail}`);
 
-    if (!email || !password) {
+    if (!normalizedEmail || !password) {
       return res.status(400).json({
         status: false,
         error: "email and password required",
       });
     }
 
-    const marketer = await Marketer.findOne({ email });
+    const marketer = await Marketer.findOne({ email: normalizedEmail });
     if (!marketer) {
       return res.status(404).json({
         status: false,

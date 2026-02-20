@@ -8,4 +8,7 @@ router.post('/start', TrackController.start);
 // POST /api/v1/track/complete
 router.post('/complete', TrackController.complete);
 
+// POST /api/v1/track/ping
+router.post('/ping', TrackController.ping);
+
 module.exports = router;

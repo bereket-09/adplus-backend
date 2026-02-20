@@ -12,6 +12,8 @@ const adSchema = new mongoose.Schema({
   start_date: Date,
   end_date: Date,
   priority: { type: Number, default: 5 }, // 1-10, 10 being highest
+  rate_tier: { type: String, enum: ['normal', 'premium'], default: 'normal' },
+  campaign_type: { type: String, enum: ['video_ads', 'banner_ads', 'interstitial'], default: 'video_ads' },
   tags: [String], // e.g. ['sports', 'music', 'news']
   status: { type: String, enum: ['pending_approval', 'active', 'paused', 'expired'], default: 'pending_approval' },
   created_at: { type: Date, default: Date.now }

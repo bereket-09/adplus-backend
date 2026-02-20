@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const AnalyticsController = require('../../controllers/analytics.controller');
 const adminAnalytics = require('../../controllers/adminAnalytics.controller');
+const { verifyToken, isAdmin } = require('../../middleware/auth.middleware');
+
+// Analytics routes (verifyToken is now handled globally in v1/index.js)
 
 // GET /api/v1/analytics/audits
 router.get('/audits', AnalyticsController.getAudits);
@@ -37,14 +40,12 @@ router.get('/marketer/reports/:marketerId', AnalyticsController.getMarketerRepor
 
 
 
+router.use('/admin', isAdmin);
 
 router.get('/admin/dashboard', adminAnalytics.getAdminDashboardAnalytics);
-
-
 router.get('/admin/analysis', adminAnalytics.getAdminAnalysis);
-
-
-
 router.get('/admin/fraud', adminAnalytics.getAdminFraudAnalytics);
+router.get('/admin/budget', adminAnalytics.getAdminBudgetAnalytics);
+
 
 module.exports = router;

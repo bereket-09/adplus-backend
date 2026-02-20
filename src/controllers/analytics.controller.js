@@ -3,6 +3,7 @@ const WatchLink = require('../models/watchLink.model');
 const Ad = require('../models/ad.model');
 const Marketer = require('../models/marketer.model');
 const Reward = require('../models/reward.model');
+const MarketerTransaction = require('../models/marketerTransaction.model');
 const logger = require('../utils/logger'); // <-- import logger
 
 exports.getAudits = async (req, res, next) => {
@@ -128,8 +129,10 @@ exports.getSingleAdDetail = async (req, res, next) => {
         const completionRate = totalViews === 0 ? 0 : completedViews / totalViews;
 
         // --------------------------------------------------------------------
-        // SPEND CALCULATION
+        // SPEND CALCULATION (FIXED)
         // --------------------------------------------------------------------
+        // We use the count of 'completed' watch sessions multiplied by the cost_per_view
+        // This is more accurate than relying on ad state which might have changed.
         const spent = completedViews * costPerView;
         const remainingBudget = Math.max(budgetAllocation - spent, 0);
         const usagePercent = budgetAllocation > 0 ? (spent / budgetAllocation) * 100 : 0;
@@ -203,20 +206,29 @@ exports.getSingleAdDetail = async (req, res, next) => {
             .filter(device => device.value > 0);
 
 
-        // --------------------------------------------------------------------
-        // HOURLY VOLUME
-        // --------------------------------------------------------------------
-        const hourlyMap = {};
-        for (let h = 0; h < 24; h++) {
-            hourlyMap[h] = { hour: `${h.toString().padStart(2, "0")}:00`, views: 0 };
-        }
-
-        for (const w of watchSessions) {
-            const hour = new Date(w.created_at).getHours();
-            hourlyMap[hour].views++;
-        }
-
         const hourlyData = Object.values(hourlyMap);
+
+        // --------------------------------------------------------------------
+        // DROP-OFF ANALYTICS (NEW)
+        // --------------------------------------------------------------------
+        const dropOffMap = {};
+        for (let i = 0; i <= 60; i += 5) {
+            dropOffMap[i] = 0;
+        }
+
+        watchSessions.forEach(w => {
+            if (w.status !== 'completed' && w.drop_off_point !== undefined) {
+                const interval = Math.floor(w.drop_off_point / 5) * 5;
+                const key = interval > 60 ? 60 : interval;
+                dropOffMap[key]++;
+            }
+        });
+
+        const dropOffData = Object.entries(dropOffMap).map(([second, count]) => ({
+            second: parseInt(second),
+            label: `${second}s`,
+            count
+        })).sort((a, b) => a.second - b.second);
 
         // --------------------------------------------------------------------
         // FINAL RESPONSE (UI-CONFORMING)
@@ -249,7 +261,8 @@ exports.getSingleAdDetail = async (req, res, next) => {
                 funnelData,
                 heatmapData,
                 deviceData,
-                hourlyData
+                hourlyData,
+                dropOffData
             }
         });
 
@@ -294,11 +307,14 @@ exports.getMarketerAnalytics = async (req, res, next) => {
 
         // Spend & budget info
         const totalBudget = ads.reduce((sum, ad) => sum + (ad.budget_allocation || 0), 0);
-        const spent = watchSessions.reduce((sum, w) => {
-            const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
-            return sum + (w.status === 'completed' ? (ad?.cost_per_view || 0) : 0);
-        }, 0);
+
+        const transactions = await MarketerTransaction.find({ marketer_id: marketerId });
+        const spent = transactions
+            .filter(t => t.type === 'deduction')
+            .reduce((sum, t) => sum + t.amount, 0);
+
         const remainingBudget = Math.max(totalBudget - spent, 0);
+        const actualRemainingBudget = marketer.remaining_budget; // From marketer record
         const usagePercent = totalBudget > 0 ? (spent / totalBudget) * 100 : 0;
 
         // Daily spread
@@ -353,6 +369,22 @@ exports.getMarketerAnalytics = async (req, res, next) => {
         // console.log("Device distribution:", deviceData);
 
 
+        // Drop-off data
+        const dropOffMap = {};
+        for (let i = 0; i <= 60; i += 5) dropOffMap[i] = 0;
+        watchSessions.forEach(w => {
+            if (w.status !== 'completed' && w.drop_off_point !== undefined) {
+                const interval = Math.floor(w.drop_off_point / 5) * 5;
+                const key = interval > 60 ? 60 : interval;
+                dropOffMap[key]++;
+            }
+        });
+        const dropOffData = Object.entries(dropOffMap).map(([second, count]) => ({
+            second: parseInt(second),
+            label: `${second}s`,
+            count
+        })).sort((a, b) => a.second - b.second);
+
         // Hourly data
         const hourlyMap = Array.from({ length: 24 }, (_, h) => ({ hour: `${h.toString().padStart(2, "0")}:00`, views: 0, completions: 0 }));
         for (const w of watchSessions) {
@@ -384,7 +416,8 @@ exports.getMarketerAnalytics = async (req, res, next) => {
                 funnelData,
                 heatmapData,
                 deviceData,
-                hourlyData: hourlyMap
+                hourlyData: hourlyMap,
+                dropOffData
             }
         });
 
@@ -539,10 +572,15 @@ exports.getMarketerReports = async (req, res, next) => {
         const completionRate = totalViews === 0 ? 0 : (completedViews / totalViews) * 100;
 
         const totalBudget = ads.reduce((sum, ad) => sum + (ad.budget_allocation || 0), 0);
-        const spent = watchSessions.reduce((sum, w) => {
-            const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
-            return sum + (w.status === "completed" ? (ad?.cost_per_view || 0) : 0);
-        }, 0);
+
+        const transactions = await MarketerTransaction.find({
+            marketer_id: marketerId,
+            created_at: { $gte: sinceDate }
+        });
+        const spent = transactions
+            .filter(t => t.type === 'deduction')
+            .reduce((sum, t) => sum + t.amount, 0);
+
         const remainingBudget = Math.max(totalBudget - spent, 0);
         const usagePercent = totalBudget > 0 ? (spent / totalBudget) * 100 : 0;
 

@@ -41,18 +41,28 @@ async function getActiveAds() {
  * Priority 10 = 10x weight, Priority 1 = 1x weight.
  */
 function weightedShuffle(ads) {
-  const weighted = [];
-  for (const ad of ads) {
-    const weight = Math.max(1, ad.priority || 5);
-    for (let i = 0; i < weight; i++) {
-      weighted.push(ad._id.toString());
-    }
-  }
+  const premiumAds = ads.filter(a => a.rate_tier === 'premium');
+  const normalAds = ads.filter(a => a.rate_tier !== 'premium');
 
-  // Fisher-Yates shuffle on weighted pool
-  for (let i = weighted.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [weighted[i], weighted[j]] = [weighted[j], weighted[i]];
+  // Traffic allocation: 70% to Premium, 30% to Normal (if both pools exist)
+  const premiumRatio = (premiumAds.length > 0 && normalAds.length > 0) ? 0.7 : (premiumAds.length > 0 ? 1.0 : 0.0);
+
+  const weighted = [];
+  // Generate a large pool to ensure distribution
+  for (let i = 0; i < 200; i++) {
+    const usePremium = Math.random() < premiumRatio;
+    const pool = usePremium ? premiumAds : normalAds;
+
+    if (pool.length > 0) {
+      // Pick within pool based on priority
+      const poolWeighted = [];
+      for (const ad of pool) {
+        const weight = Math.max(1, ad.priority || 5);
+        for (let w = 0; w < weight; w++) poolWeighted.push(ad._id.toString());
+      }
+      const pickedId = poolWeighted[Math.floor(Math.random() * poolWeighted.length)];
+      weighted.push(pickedId);
+    }
   }
 
   // Deduplicate while preserving weighted order
@@ -61,6 +71,14 @@ function weightedShuffle(ads) {
   for (const id of weighted) {
     if (!seen.has(id)) {
       seen.add(id);
+      result.push(id);
+    }
+  }
+
+  // If we still have ads not in the result (due to probability), append them
+  for (const ad of ads) {
+    const id = ad._id.toString();
+    if (!seen.has(id)) {
       result.push(id);
     }
   }

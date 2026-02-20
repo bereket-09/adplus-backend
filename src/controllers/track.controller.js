@@ -81,7 +81,7 @@ exports.start = async (req, res, next) => {
       return res.status(410).json({ status: false, error: 'Link Expired' });
     }
 
-    const metaDecoded = Meta.decodeAndValidate(meta,req);
+    const metaDecoded = Meta.decodeAndValidate(meta, req);
     if (!metaDecoded.valid) {
       return res.status(400).json({ status: false, error: 'invalid metadata' });
     }
@@ -144,7 +144,7 @@ exports.complete = async (req, res, next) => {
       });
     }
 
-    const metaDecoded = Meta.decodeAndValidate(meta,req);
+    const metaDecoded = Meta.decodeAndValidate(meta, req);
     if (!metaDecoded.valid) {
       return res.status(400).json({ status: false, error: 'invalid metadata' });
     }
@@ -177,6 +177,52 @@ exports.complete = async (req, res, next) => {
 
   } catch (err) {
     logger.error(`WatchLinkController.complete - ${err.message}`);
+    next(err);
+  }
+};
+
+
+/**
+ * Video progress ping (for drop-off analytics)
+ */
+exports.ping = async (req, res, next) => {
+  try {
+    const { token, position, secure_key } = req.body;
+
+    if (!token || position === undefined || !secure_key) {
+      return res.status(400).json({ status: false, error: 'token, position, secure_key required' });
+    }
+
+    const watch = await WatchLink.findOne({ token });
+    if (!watch) return res.status(404).json({ status: false, error: 'token not found' });
+
+    if (watch.secure_key !== secure_key) {
+      return res.status(403).json({ status: false, error: 'Invalid secure key' });
+    }
+
+    if (watch.status === 'completed') {
+      return res.json({ status: true, message: 'Already completed' });
+    }
+
+    // Update positions
+    watch.last_position = position;
+    if (position > (watch.max_position_reached || 0)) {
+      watch.max_position_reached = position;
+    }
+
+    // Store as drop-off point for now (will be updated on next ping or complete)
+    watch.drop_off_point = position;
+
+    await watch.save();
+
+    res.json({
+      status: true,
+      last_position: watch.last_position,
+      max_position: watch.max_position_reached
+    });
+
+  } catch (err) {
+    logger.error(`WatchLinkController.ping - ${err.message}`);
     next(err);
   }
 };
