@@ -6,8 +6,10 @@ const Ad = require('../models/ad.model');
 const Marketer = require('../models/marketer.model');
 const AuditLog = require('../models/audit.model');
 const { API_DOMAIN } = process.env;
-const bcrypt = require('bcryptjs'); // <-- added for secure key
-const logger = require('../utils/logger'); // <-- import logger
+const bcrypt = require('bcryptjs');
+const logger = require('../utils/logger');
+const blacklistCheck = require('../utils/blacklistCheck');
+const cache = require('../utils/internalCache');
 
 exports.createLink = async (req, res, next) => {
   try {
@@ -17,6 +19,22 @@ exports.createLink = async (req, res, next) => {
     if (!msisdn) {
       logger.error(`WatchLinkController.createLink - msisdn required`);
       return res.status(400).json({ status: false, error: 'msisdn required' });
+    }
+
+    // --- BLACKLIST CHECK ---
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '';
+    const blCheck = await blacklistCheck.checkAll({ msisdn, ip });
+    if (blCheck.blocked) {
+      logger.warn(`WatchLinkController.createLink - BLOCKED msisdn=${msisdn} ip=${ip} reasons=${JSON.stringify(blCheck.reasons)}`);
+      await AuditLog.create({
+        type: 'blacklist_blocked',
+        msisdn,
+        timestamp: new Date(),
+        ip,
+        fraud_detected: true,
+        request_payload: { reasons: blCheck.reasons }
+      });
+      return res.status(403).json({ status: false, error: 'Access denied' });
     }
 
     const now = new Date();
@@ -62,7 +80,7 @@ exports.createLink = async (req, res, next) => {
     // -------------------------------------------
     // NO EXISTING LINK → CREATE NEW ONE
     // -------------------------------------------
-    const ad = await AdEngine.selectAd();
+    const ad = await AdEngine.selectAd(msisdn);
     if (!ad) {
       logger.error(`WatchLinkController.createLink - No active ads available`);
       return res.status(400).json({ status: false, error: 'no active ads available' });
@@ -156,7 +174,7 @@ exports.getVideoByToken = async (req, res, next) => {
       return res.status(410).json({ status: false, error: 'Shared Link expired or May have been Already Completed' });
     }
 
-    const meta = Meta.decodeAndValidate(metaBase64 , req);
+    const meta = Meta.decodeAndValidate(metaBase64, req);
     // console.log("🚀 ~ meta:", meta)
     // if (!meta.valid) {
     //   await watch.addAudit('opened', false, meta.report);
@@ -206,7 +224,13 @@ exports.getVideoByToken = async (req, res, next) => {
       ip, user_agent: ua, request_payload: meta.payload
     });
 
-    const ad = await Ad.findById(watch.ad_id);
+    // Cached ad lookup for high TPS
+    const adCacheKey = `ad:${watch.ad_id}`;
+    let ad = cache.get(adCacheKey);
+    if (!ad) {
+      ad = await Ad.findById(watch.ad_id).lean();
+      if (ad) cache.set(adCacheKey, ad, 60_000); // 1 min cache
+    }
     const video_url = (ad && ad.video_file_path) ? ad.video_file_path : '';
 
     logger.info(`WatchLinkController.getVideoByToken - Video URL generated for token ${token}, msisdn ${watch.msisdn}`);

@@ -5,6 +5,7 @@ const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const fs = require("fs");
+const AdEngine = require('../utils/adEngine');
 // Initialize Supabase client
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
@@ -96,6 +97,7 @@ exports.createWithUpload = async (req, res, next) => {
     ad.video_file_path = urlData.publicUrl;
     await ad.save();
 
+    AdEngine.invalidateCache(); // Refresh recommendation engine
     logger.info(`Ad created successfully: ${ad._id}`);
     res.json({ status: true, ad });
 
@@ -155,6 +157,8 @@ exports.update = async (req, res, next) => {
 
     await ad.save();
 
+    AdEngine.invalidateCache(); // Refresh recommendation engine
+
     if (Object.keys(changedFields).length > 0) {
       await SystemChangeAudit.create({
         entity_type: 'ad',
@@ -211,6 +215,8 @@ exports.approve = async (req, res, next) => {
 
     ad.status = 'active';
     await ad.save();
+
+    AdEngine.invalidateCache(); // Refresh recommendation engine
 
     await SystemChangeAudit.create({
       entity_type: 'ad',

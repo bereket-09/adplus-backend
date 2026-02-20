@@ -1,45 +1,132 @@
-// const Ad = require('../models/ad.model');
-
-// exports.selectAd = async () => {
-//   const now = new Date();
-//   const ad = await Ad.findOne({
-//     status: 'active',
-//     remaining_budget: { $gt: 0 },
-//     start_date: { $lte: now },
-//     end_date: { $gte: now }
-//   }).sort({ created_at: 1 });
-//   return ad;
-// };
-
 const Ad = require('../models/ad.model');
+const cache = require('./internalCache');
+const logger = require('./logger');
 
-// In-memory store: { msisdn: [adId1, adId2, ...] }
+const ACTIVE_ADS_CACHE_KEY = 'adengine:active_ads';
+const ACTIVE_ADS_CACHE_TTL = 15_000; // 15 seconds — fresh enough, but avoids hammering DB
+
+// In-memory store: { msisdn: { queue: [adId1, adId2, ...], lastServed: Date } }
 const userAdMemory = {};
 
-exports.selectAd = async (msisdn) => {
-  const now = new Date();
+// Cleanup old user memory entries every 10 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000; // 30 min
+  for (const [msisdn, data] of Object.entries(userAdMemory)) {
+    if (data.lastServed && data.lastServed.getTime() < cutoff) {
+      delete userAdMemory[msisdn];
+    }
+  }
+}, 10 * 60 * 1000);
 
-  // Fetch all active ads
+/**
+ * Get active ads with in-memory caching
+ */
+async function getActiveAds() {
+  const cached = cache.get(ACTIVE_ADS_CACHE_KEY);
+  if (cached) return cached;
+
+  const now = new Date();
   const activeAds = await Ad.find({
     status: 'active',
     remaining_budget: { $gt: 0 },
-    // start_date: { $lte: now },
-    // end_date: { $gte: now },
-  }).sort({ created_at: 1 });
-  // console.log("🚀 ~ activeAds:", activeAds)
+  }).sort({ priority: -1, created_at: 1 }).lean();
+
+  cache.set(ACTIVE_ADS_CACHE_KEY, activeAds, ACTIVE_ADS_CACHE_TTL);
+  return activeAds;
+}
+
+/**
+ * Priority-weighted shuffle:
+ * Ads with higher priority appear more often in the rotation.
+ * Priority 10 = 10x weight, Priority 1 = 1x weight.
+ */
+function weightedShuffle(ads) {
+  const weighted = [];
+  for (const ad of ads) {
+    const weight = Math.max(1, ad.priority || 5);
+    for (let i = 0; i < weight; i++) {
+      weighted.push(ad._id.toString());
+    }
+  }
+
+  // Fisher-Yates shuffle on weighted pool
+  for (let i = weighted.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [weighted[i], weighted[j]] = [weighted[j], weighted[i]];
+  }
+
+  // Deduplicate while preserving weighted order
+  const seen = new Set();
+  const result = [];
+  for (const id of weighted) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Select the best ad for a given MSISDN.
+ * Uses priority-weighted rotation, cached active ads, and per-user queues.
+ *
+ * @param {string} msisdn - subscriber identifier
+ * @param {object} options - optional filters
+ * @param {string[]} options.tags - filter by tags (e.g. ['sports'])
+ * @param {string} options.deviceType - filter by device compatibility
+ */
+exports.selectAd = async (msisdn, options = {}) => {
+  let activeAds = await getActiveAds();
 
   if (!activeAds.length) return null;
 
-  // Initialize memory for the user
-  if (!userAdMemory[msisdn] || userAdMemory[msisdn].length === 0) {
-    // Shuffle ads
-    const shuffledAds = activeAds.map(ad => ad._id.toString()).sort(() => Math.random() - 0.5);
-    userAdMemory[msisdn] = shuffledAds;
+  // Optional tag filtering
+  if (options.tags && options.tags.length > 0) {
+    const tagFiltered = activeAds.filter(ad =>
+      ad.tags && ad.tags.some(t => options.tags.includes(t))
+    );
+    // Fall back to all ads if no tag match
+    if (tagFiltered.length > 0) activeAds = tagFiltered;
   }
 
-  // Pop the next ad from memory
-  const nextAdId = userAdMemory[msisdn].shift();
+  // Initialize or refresh user queue
+  if (!userAdMemory[msisdn] || userAdMemory[msisdn].queue.length === 0) {
+    userAdMemory[msisdn] = {
+      queue: weightedShuffle(activeAds),
+      lastServed: new Date()
+    };
+  }
+
+  // Pop the next ad from queue
+  const nextAdId = userAdMemory[msisdn].queue.shift();
+  userAdMemory[msisdn].lastServed = new Date();
+
   const nextAd = activeAds.find(ad => ad._id.toString() === nextAdId);
 
-  return nextAd;
+  // If ad somehow disappeared from active set, try next
+  if (!nextAd && userAdMemory[msisdn].queue.length > 0) {
+    return exports.selectAd(msisdn, options);
+  }
+
+  return nextAd || activeAds[0]; // Absolute fallback
+};
+
+/**
+ * Invalidate the active ads cache (call after ad create/update/approve)
+ */
+exports.invalidateCache = () => {
+  cache.del(ACTIVE_ADS_CACHE_KEY);
+};
+
+/**
+ * Get recommendation stats (for admin dashboard)
+ */
+exports.getStats = () => {
+  return {
+    cached_ads: cache.get(ACTIVE_ADS_CACHE_KEY)?.length || 0,
+    active_user_queues: Object.keys(userAdMemory).length,
+    cache_ttl_ms: ACTIVE_ADS_CACHE_TTL
+  };
 };

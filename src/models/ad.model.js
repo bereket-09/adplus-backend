@@ -11,7 +11,9 @@ const adSchema = new mongoose.Schema({
   video_file_path: String,
   start_date: Date,
   end_date: Date,
-  status: { type: String, enum: ['pending_approval','active','paused','expired'], default:'pending_approval' },
+  priority: { type: Number, default: 5 }, // 1-10, 10 being highest
+  tags: [String], // e.g. ['sports', 'music', 'news']
+  status: { type: String, enum: ['pending_approval', 'active', 'paused', 'expired'], default: 'pending_approval' },
   created_at: { type: Date, default: Date.now }
 });
 

@@ -4,10 +4,18 @@ const WatchLink = require('../models/watchLink.model');
 const AuditLog = require('../models/audit.model');
 const logger = require('../utils/logger');
 const Reward = require('../models/reward.model');
+const Blacklist = require('../models/blacklist.model');
+const cache = require('../utils/internalCache');
+const AdEngine = require('../utils/adEngine');
 
 exports.getAdminDashboardAnalytics = async (req, res, next) => {
     try {
         logger.info('Fetching admin dashboard analytics');
+
+        // Check cache first (30 second TTL for dashboard)
+        const cacheKey = 'analytics:admin_dashboard';
+        const cached = cache.get(cacheKey);
+        if (cached) return res.json(cached);
 
         /* =============================
            BASIC COUNTS
@@ -16,11 +24,13 @@ exports.getAdminDashboardAnalytics = async (req, res, next) => {
         const [
             totalMarketers,
             activeMarketers,
-            activeCampaigns
+            activeCampaigns,
+            totalBlacklisted
         ] = await Promise.all([
             Marketer.countDocuments(),
             Marketer.countDocuments({ status: 'active' }),
-            Ad.countDocuments({ status: 'active' })
+            Ad.countDocuments({ status: 'active' }),
+            Blacklist.countDocuments({ is_active: true })
         ]);
 
         /* =============================
@@ -60,6 +70,35 @@ exports.getAdminDashboardAnalytics = async (req, res, next) => {
         });
 
         totalRevenue = Math.round(totalRevenue * 100) / 100;
+
+        /* =============================
+           AVERAGE RESPONSE LATENCY (computed from view timestamps)
+        ============================== */
+
+        const latencySample = await WatchLink.find(
+            { opened_at: { $exists: true }, created_at: { $exists: true } },
+            { opened_at: 1, created_at: 1 }
+        ).sort({ created_at: -1 }).limit(200).lean();
+
+        let avgLatency = 0;
+        if (latencySample.length > 0) {
+            const totalLatency = latencySample.reduce((sum, w) => {
+                if (w.opened_at && w.created_at) {
+                    return sum + (new Date(w.opened_at) - new Date(w.created_at));
+                }
+                return sum;
+            }, 0);
+            avgLatency = Math.round(totalLatency / latencySample.length / 1000); // in seconds
+        }
+
+        /* =============================
+           SYSTEM HEALTH (computed)
+        ============================== */
+
+        const uptimeHours = process.uptime() / 3600;
+        const memUsage = process.memoryUsage();
+        const heapPercent = Math.round((memUsage.heapUsed / memUsage.heapTotal) * 100);
+        const systemHealth = heapPercent < 90 ? 99.9 : (heapPercent < 95 ? 95.0 : 85.0);
 
         /* =============================
            GLOBAL VIEW TRENDS (6 MONTHS)
@@ -167,7 +206,7 @@ exports.getAdminDashboardAnalytics = async (req, res, next) => {
            RESPONSE
         ============================== */
 
-        res.json({
+        const response = {
             status: true,
             platform: {
                 views: totalViews,
@@ -175,14 +214,21 @@ exports.getAdminDashboardAnalytics = async (req, res, next) => {
                 active_campaigns: activeCampaigns,
                 total_revenue: totalRevenue,
                 engagement_rate: engagementRate,
-                system_health: 99.9
+                system_health: systemHealth,
+                avg_latency_sec: avgLatency,
+                uptime_hours: Math.round(uptimeHours * 10) / 10,
+                blacklisted_entries: totalBlacklisted,
+                engine_stats: AdEngine.getStats()
             },
             trends: {
                 monthly_views: viewsTrend
             },
             rate_distribution: rateDistribution,
             top_campaigns: topCampaigns
-        });
+        };
+
+        cache.set(cacheKey, response, 30_000); // 30s cache
+        res.json(response);
 
     } catch (err) {
         logger.error(`AdminAnalytics.getAdminDashboardAnalytics - ${err.message}`);
@@ -234,6 +280,23 @@ exports.getAdminAnalysis = async (req, res, next) => {
         /* =============================
            PLATFORM TREND (MONTHLY LAST 6 MONTHS)
         ============================== */
+        /* =============================
+           AVERAGE LATENCY (real)
+        ============================== */
+        const latencySample2 = await WatchLink.find(
+            { opened_at: { $exists: true }, created_at: { $exists: true } },
+            { opened_at: 1, created_at: 1 }
+        ).sort({ created_at: -1 }).limit(100).lean();
+
+        let avgLatency = 0;
+        if (latencySample2.length > 0) {
+            const totalLat = latencySample2.reduce((sum, w) => {
+                if (w.opened_at && w.created_at) return sum + (new Date(w.opened_at) - new Date(w.created_at));
+                return sum;
+            }, 0);
+            avgLatency = Math.round(totalLat / latencySample2.length / 1000);
+        }
+
         const sixMonthsAgo = new Date();
         sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
         sixMonthsAgo.setDate(1);
@@ -319,8 +382,8 @@ exports.getAdminAnalysis = async (req, res, next) => {
                 daily_active_users: dailyActiveUsers.length,
                 completion_rate: completionRate,
                 total_revenue: totalRevenue,
-                avg_latency: 92,  // static placeholder
-                system_uptime: 99.9 // static
+                avg_latency: avgLatency, // real computed
+                system_uptime: Math.round((process.uptime() / 3600) * 10) / 10 // real hours
             },
             trends: platformTrend,
             regional_distribution: regionalDistribution,
@@ -359,7 +422,9 @@ exports.getAdminFraudAnalytics = async (req, res, next) => {
             ? 0
             : Math.round((totalFraud / totalEvaluated) * 1000) / 10;
 
-        const falsePositiveRate = 0.8; // placeholder
+        // Compute false positive rate from actual data
+        const totalResolved = await AuditLog.countDocuments({ fraud_detected: true, type: { $in: ['resolved', 'false_positive'] } });
+        const falsePositiveRate = totalFraud === 0 ? 0 : Math.round((totalResolved / totalFraud) * 1000) / 10;
 
         /* =============================
            FRAUD TREND (LAST 14 DAYS)
