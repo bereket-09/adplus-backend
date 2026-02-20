@@ -4,10 +4,43 @@ const SystemChangeAudit = require('../models/systemChangeAudit.model');
 const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
-const fs = require("fs");
+const axios = require('axios');
+const https = require('https');
 const AdEngine = require('../utils/adEngine');
-// Initialize Supabase client
+// Initialize Supabase client (used for getPublicUrl - a local synchronous operation)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// Axios instance for direct Supabase Storage REST API calls
+// (bypasses Supabase JS client's native fetch which has issues with binary uploads in Node 20)
+const supabaseAxios = axios.create({
+  baseURL: `${process.env.SUPABASE_URL}/storage/v1`,
+  headers: {
+    'apikey': process.env.SUPABASE_KEY,
+    'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+  },
+  httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity,
+});
+
+/**
+ * Upload a file buffer to Supabase Storage via REST API
+ */
+async function uploadToSupabase(bucket, filename, buffer, mimetype) {
+  const url = `/object/${bucket}/${filename}`;
+  const response = await supabaseAxios.post(url, buffer, {
+    headers: { 'Content-Type': mimetype },
+  });
+  return response.data;
+}
+
+/**
+ * Get a public URL for a Supabase Storage file
+ */
+function getPublicUrl(bucket, filename) {
+  const { data } = supabase.storage.from(bucket).getPublicUrl(filename);
+  return data.publicUrl;
+}
 
 /**
  * CREATE AD + VIDEO UPLOAD TO SUPABASE
@@ -62,23 +95,20 @@ exports.createWithUpload = async (req, res, next) => {
       created_at: new Date()
     });
 
-    // 4️⃣ Upload file to Supabase (disk storage)
+    // 4️⃣ Upload buffer to Supabase (memory storage)
     const fileExt = path.extname(req.file.originalname);
     const supabaseFileName = `${ad._id}-${Date.now()}${fileExt}`;
 
-    const fileStream = fs.createReadStream(req.file.path);
-
     const { error: uploadError } = await supabase.storage
       .from('videos')
-      .upload(supabaseFileName, fileStream, {
+      .upload(supabaseFileName, req.file.buffer, {
         contentType: req.file.mimetype,
+        upsert: false,
       });
-
-    // Remove temp file
-    fs.unlinkSync(req.file.path);
 
     if (uploadError) {
       logger.error(`Supabase upload error: ${uploadError.message}`);
+      await Ad.findByIdAndDelete(ad._id); // clean up orphan ad record
       return res.status(500).json({ status: false, error: "Failed to upload video" });
     }
 
