@@ -175,12 +175,11 @@ exports.getVideoByToken = async (req, res, next) => {
     }
 
     const meta = Meta.decodeAndValidate(metaBase64, req);
-    // console.log("🚀 ~ meta:", meta)
-    // if (!meta.valid) {
-    //   await watch.addAudit('opened', false, meta.report);
-    //   logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}`);
-    //   return res.status(400).json({ status: false, error: 'invalid Link or user status' });
-    // }
+    if (!meta.valid) {
+      // await watch.addAudit('opened', false, meta.report);
+      logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}: ${meta.report}`);
+      return res.status(400).json({ status: false, error: `Invalid security context: ${meta.report}` });
+    }
 
     // if (meta.payload.msisdn !== watch.msisdn) {
     //   await watch.addFraud('msisdn_mismatch', { expected: watch.msisdn, got: meta.payload.msisdn });
@@ -235,7 +234,14 @@ exports.getVideoByToken = async (req, res, next) => {
 
     logger.info(`WatchLinkController.getVideoByToken - Video URL generated for token ${token}, msisdn ${watch.msisdn}`);
 
-    return res.json({ status: true, ad_id: String(watch.ad_id), video_url, token, secure_key: watch.secure_key });
+    return res.json({ 
+        status: true, 
+        ad_id: String(watch.ad_id), 
+        video_url, 
+        token, 
+        secure_key: watch.secure_key,
+        ad // Return the full ad object
+    });
   } catch (err) {
     logger.error(`WatchLinkController.getVideoByToken - Error fetching video: ${err.message}`);
     next(err);

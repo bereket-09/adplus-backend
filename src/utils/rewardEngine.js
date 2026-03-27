@@ -69,3 +69,34 @@ exports.grantReward = async (msisdn, token) => {
 
   return { granted: true, offer_id: offerId, reward_id: reward._id };
 };
+
+exports.deductClickBudget = async (marketer_id, ad_id) => {
+  logger.info(`RewardEngine.deductClickBudget - Starting click deduction | marketer_id: ${marketer_id}, ad_id: ${ad_id}`);
+
+  const marketer = await Marketer.findById(marketer_id);
+  const ad = await Ad.findById(ad_id);
+  if (!marketer || !ad) return;
+
+  const clickCost = (ad.cost_per_view || 0.1) * 0.5; // Click fee is 50% of CPV
+  const previous_budget = marketer.remaining_budget;
+  marketer.remaining_budget -= clickCost;
+
+  if (marketer.remaining_budget <= 0) {
+    marketer.remaining_budget = 0;
+    await Ad.updateMany({ marketer_id }, { status: 'paused' });
+  }
+
+  await marketer.save();
+
+  await MarketerTransaction.create({
+    marketer_id: marketer._id,
+    type: 'deduction',
+    amount: clickCost,
+    previous_budget,
+    new_budget: marketer.remaining_budget,
+    reason: 'Ad click deduction',
+    description: `Deducted ${clickCost} for click on ad ${ad._id}`
+  });
+
+  return marketer;
+};

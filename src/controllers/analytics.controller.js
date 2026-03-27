@@ -145,7 +145,7 @@ exports.getSingleAdDetail = async (req, res, next) => {
             const d = new Date(w.created_at).toISOString().slice(0, 10);
 
             if (!dailyMap[d]) {
-                dailyMap[d] = { date: d, views: 0, completions: 0, spend: 0 };
+                dailyMap[d] = { name: d, views: 0, completions: 0, spend: 0 };
             }
 
             dailyMap[d].views++;
@@ -155,7 +155,7 @@ exports.getSingleAdDetail = async (req, res, next) => {
                 dailyMap[d].spend += costPerView;
             }
         }
-        const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
+        const dailyData = Object.values(dailyMap).sort((a, b) => a.name.localeCompare(b.name));
 
         // --------------------------------------------------------------------
         // FUNNEL DATA (FULLY FIXED)
@@ -183,30 +183,51 @@ exports.getSingleAdDetail = async (req, res, next) => {
         const heatmapData = Object.values(heatmapAcc);
 
         // --------------------------------------------------------------------
+        // HOURLY ANALYTICS
+        // --------------------------------------------------------------------
+        const hourlyMap = Array.from({ length: 24 }, (_, h) => ({
+            hour: `${h.toString().padStart(2, "0")}:00`,
+            views: 0,
+            completions: 0
+        }));
+
+        for (const w of watchSessions) {
+            const dt = new Date(w.created_at);
+            const hour = dt.getHours();
+            hourlyMap[hour].views++;
+            if (w.status === 'completed') hourlyMap[hour].completions++;
+        }
+
+        const hourlyData = Object.values(hourlyMap);
+
+        // --------------------------------------------------------------------
         // DEVICE TYPE DISTRIBUTION (from meta_json.device.type)
         // --------------------------------------------------------------------
         const deviceCounters = { mobile: 0, tablet: 0, desktop: 0 };
+        let totalWatchTime = 0;
+        let watchTimeCount = 0;
 
         for (const w of watchSessions) {
             const type = w.meta_json?.device?.type?.toLowerCase() || "mobile";
-            // console.log("🚀 ~ type:", type)
             if (deviceCounters[type] !== undefined) deviceCounters[type]++;
+
+            if (w.status === 'completed') {
+                totalWatchTime += 30;
+                watchTimeCount++;
+            } else if (w.drop_off_point) {
+                totalWatchTime += w.drop_off_point;
+                watchTimeCount++;
+            }
         }
-
-        // Optional: total devices for percentage calculation
+        const avgWatchTime = watchTimeCount > 0 ? Math.round(totalWatchTime / watchTimeCount) : 0;
+        const rewardSuccessRate = totalViews > 0 ? Math.round((completedViews / totalViews) * 100) : 100;
         const totalDevices = Object.values(deviceCounters).reduce((a, b) => a + b, 0) || 1;
-
-
-        // Include only devices with value > 0
         const deviceData = Object.entries(deviceCounters)
             .map(([name, count]) => ({
                 name,
                 value: Math.round((count / totalDevices) * 100)
             }))
             .filter(device => device.value > 0);
-
-
-        const hourlyData = Object.values(hourlyMap);
 
         // --------------------------------------------------------------------
         // DROP-OFF ANALYTICS (NEW)
@@ -257,6 +278,8 @@ exports.getSingleAdDetail = async (req, res, next) => {
             // Full analytic blocks
             analytics: {
                 sms_sent: smsCount,
+                reward_success_rate: rewardSuccessRate,
+                avg_watch_time: `${avgWatchTime} sec`,
                 dailyData,
                 funnelData,
                 heatmapData,
@@ -321,7 +344,7 @@ exports.getMarketerAnalytics = async (req, res, next) => {
         const dailyMap = {};
         for (const w of watchSessions) {
             const date = new Date(w.created_at).toISOString().slice(0, 10);
-            if (!dailyMap[date]) dailyMap[date] = { date, views: 0, completions: 0, spend: 0 };
+            if (!dailyMap[date]) dailyMap[date] = { name: date, views: 0, completions: 0, spend: 0 };
             dailyMap[date].views++;
             if (w.status === 'completed') {
                 const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
@@ -329,7 +352,7 @@ exports.getMarketerAnalytics = async (req, res, next) => {
                 dailyMap[date].spend += ad?.cost_per_view || 0;
             }
         }
-        const dailyData = Object.values(dailyMap);
+        const dailyData = Object.values(dailyMap).sort((a, b) => a.name.localeCompare(b.name));
 
         // Funnel data
         const funnelData = [
@@ -354,11 +377,25 @@ exports.getMarketerAnalytics = async (req, res, next) => {
         // Device type distribution
         const deviceCounters = { mobile: 0, tablet: 0, desktop: 0 };
 
+        let totalWatchTime = 0;
+        let watchTimeCount = 0;
+
         for (const w of watchSessions) {
             // fallback to "mobile" if meta_json or device type is missing
             const type = w.meta_json?.device?.type?.toLowerCase() || "mobile";
             if (deviceCounters[type] !== undefined) deviceCounters[type]++;
+
+            if (w.status === 'completed') {
+                totalWatchTime += 30; // assume 30s for completed if no length stored
+                watchTimeCount++;
+            } else if (w.drop_off_point) {
+                totalWatchTime += w.drop_off_point;
+                watchTimeCount++;
+            }
         }
+
+        const avgWatchTime = watchTimeCount > 0 ? Math.round(totalWatchTime / watchTimeCount) : 0;
+        const rewardSuccessRate = totalViews > 0 ? Math.round((completedViews / totalViews) * 100) : 100;
 
         const totalDevices = Object.values(deviceCounters).reduce((a, b) => a + b, 0) || 1;
 
@@ -412,6 +449,8 @@ exports.getMarketerAnalytics = async (req, res, next) => {
             },
             analytics: {
                 sms_sent: smsCount,
+                reward_success_rate: rewardSuccessRate,
+                avg_watch_time: `${avgWatchTime} sec`,
                 dailyData,
                 funnelData,
                 heatmapData,
@@ -588,7 +627,7 @@ exports.getMarketerReports = async (req, res, next) => {
         const dailyMap = {};
         for (const w of watchSessions) {
             const date = new Date(w.created_at).toISOString().slice(0, 10);
-            if (!dailyMap[date]) dailyMap[date] = { date, views: 0, completions: 0, spend: 0 };
+            if (!dailyMap[date]) dailyMap[date] = { name: date, views: 0, completions: 0, spend: 0 };
             dailyMap[date].views++;
             if (w.status === "completed") {
                 const ad = ads.find(a => a._id.toString() === w.ad_id.toString());
@@ -596,7 +635,7 @@ exports.getMarketerReports = async (req, res, next) => {
                 dailyMap[date].spend += ad?.cost_per_view || 0;
             }
         }
-        const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
+        const dailyData = Object.values(dailyMap).sort((a, b) => a.name.localeCompare(b.name));
 
         // Funnel
         const funnelData = [
@@ -620,10 +659,23 @@ exports.getMarketerReports = async (req, res, next) => {
 
         // Device distribution
         const deviceCounters = { Mobile: 0, Tablet: 0, Desktop: 0 };
+        let totalWatchTime = 0;
+        let watchTimeCount = 0;
+
         for (const w of watchSessions) {
             const category = w.meta_json?.deviceInfo?.category || "Mobile";
             if (deviceCounters[category] !== undefined) deviceCounters[category]++;
+
+            if (w.status === 'completed') {
+                totalWatchTime += 30;
+                watchTimeCount++;
+            } else if (w.drop_off_point) {
+                totalWatchTime += w.drop_off_point;
+                watchTimeCount++;
+            }
         }
+        const avgWatchTime = watchTimeCount > 0 ? Math.round(totalWatchTime / watchTimeCount) : 0;
+        const rewardSuccessRate = totalViews > 0 ? Math.round((completedViews / totalViews) * 100) : 100;
         const totalDevices = Object.values(deviceCounters).reduce((a, b) => a + b, 0) || 1;
         const deviceData = Object.entries(deviceCounters)
             .map(([name, count]) => ({ name, value: Math.round((count / totalDevices) * 100) }))
@@ -637,10 +689,36 @@ exports.getMarketerReports = async (req, res, next) => {
             if (w.status === "completed") hourlyMap[hour].completions++;
         }
 
+        // Campaign-level performance
+        const campaignMap = {};
+        ads.forEach(ad => {
+            campaignMap[ad._id.toString()] = {
+                name: ad.campaign_name,
+                impressions: 0,
+                completions: 0,
+                spend: 0
+            };
+        });
+
+        watchSessions.forEach(w => {
+            const adId = w.ad_id.toString();
+            if (campaignMap[adId]) {
+                campaignMap[adId].impressions++;
+                if (w.status === "completed") {
+                    campaignMap[adId].completions++;
+                    const ad = ads.find(a => a._id.toString() === adId);
+                    campaignMap[adId].spend += ad?.cost_per_view || 0;
+                }
+            }
+        });
+
+        const campaignData = Object.values(campaignMap);
+
         res.json({
             status: true,
             marketerId,
             marketerInfo: marketer,
+            ads: ads.map(a => ({ _id: a._id, campaign_name: a.campaign_name })),
             adCount: ads.length,
             total_views: totalViews,
             opened_views: openedViews,
@@ -648,7 +726,17 @@ exports.getMarketerReports = async (req, res, next) => {
             pending_views: pendingViews,
             completion_rate: completionRate,
             budget: { spent, remaining_budget: remainingBudget, total_budget: totalBudget, usage_percent: usagePercent },
-            analytics: { sms_sent: smsCount, dailyData, funnelData, heatmapData, deviceData, hourlyData: hourlyMap }
+            analytics: {
+                sms_sent: smsCount,
+                reward_success_rate: rewardSuccessRate,
+                avg_watch_time: `${avgWatchTime} sec`,
+                dailyData,
+                campaignData, // Add campaign level data
+                funnelData,
+                heatmapData,
+                deviceData,
+                hourlyData: hourlyMap
+            }
         });
     } catch (err) {
         logger.error(`AnalyticsController.getMarketerReports - Error: ${err.message}`);

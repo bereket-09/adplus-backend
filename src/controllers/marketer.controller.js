@@ -2,6 +2,8 @@ const Marketer = require('../models/marketer.model');
 const bcrypt = require('bcryptjs');
 const logger = require('../utils/logger'); // <-- import logger
 const jwt = require("jsonwebtoken");
+const path = require('path');
+const supabase = require('../utils/supabaseClient');
 
 exports.create = async (req, res, next) => {
   try {
@@ -138,12 +140,13 @@ exports.list = async (req, res, next) => {
 
 exports.update = async (req, res, next) => {
   try {
-    const { name, email, total_budget, contact_info, status } = req.body;
-    logger.info(`MarketerController.update - Updating marketer: ${userId}`);
+    const { name, email, total_budget, contact_info, status, company_name, business_reg_number, business_address, kyc_status } = req.body;
+    const marketerId = req.params.id;
+    logger.info(`MarketerController.update - Updating marketer: ${marketerId}`);
 
-    const marketer = await Marketer.findById(userId);
+    const marketer = await Marketer.findById(marketerId);
     if (!marketer) {
-      logger.error(`MarketerController.update - Marketer not found: ${userId}`);
+      logger.error(`MarketerController.update - Marketer not found: ${marketerId}`);
       return res.status(404).json({ status: false, error: 'marketer not found' });
     }
 
@@ -157,18 +160,76 @@ exports.update = async (req, res, next) => {
     }
 
     if (name) marketer.name = name;
-    if (total_budget) {
+    if (total_budget !== undefined) {
       marketer.total_budget = total_budget;
       marketer.remaining_budget = Math.min(marketer.remaining_budget, total_budget);
     }
     if (contact_info) marketer.contact_info = contact_info;
     if (status) marketer.status = status;
+    
+    // KYC / Business Info
+    if (company_name) marketer.company_name = company_name;
+    if (business_reg_number) marketer.business_reg_number = business_reg_number;
+    if (business_address) marketer.business_address = business_address;
+    if (req.body.business_category) marketer.business_category = req.body.business_category;
+    if (kyc_status) marketer.kyc_status = kyc_status;
+    if (req.body.admin_comments !== undefined) marketer.admin_comments = req.body.admin_comments;
+
+    // Contact Person nested logic
+    if (req.body.contact_person) {
+      marketer.contact_person = {
+        ...marketer.contact_person?.toObject(),
+        ...req.body.contact_person
+      };
+    }
 
     await marketer.save();
-    logger.info(`MarketerController.update - Marketer updated: ${userId}`);
+    logger.info(`MarketerController.update - Marketer updated: ${marketerId}`);
     res.json({ status: true, message: 'Marketer updated', marketer });
   } catch (err) {
     logger.error(`MarketerController.update - Error updating marketer: ${err.message}`);
+    next(err);
+  }
+};
+
+exports.uploadKYCDoc = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { doc_type } = req.body;
+    const file = req.file;
+
+    if (!file) return res.status(400).json({ status: false, error: 'No file uploaded' });
+
+    const marketer = await Marketer.findById(id);
+    if (!marketer) return res.status(404).json({ status: false, error: 'Marketer not found' });
+
+    const fileName = `kyc-${id}-${Date.now()}-${file.originalname.replace(/ /g, '_')}`;
+    const { error } = await supabase.storage.from('kyc').upload(fileName, file.buffer, { contentType: file.mimetype });
+
+    if (error) {
+       logger.error(`Supabase upload error: ${error.message}`);
+       throw error;
+    }
+
+    const { data } = supabase.storage.from('kyc').getPublicUrl(fileName);
+
+    marketer.kyc_documents.push({
+      doc_type: doc_type || 'Other',
+      file_url: data.publicUrl,
+      file_name: file.originalname,
+      status: 'pending'
+    });
+
+    // Auto-update KYC status to pending if it's the first doc or rejected
+    if (marketer.kyc_status === 'unverified' || marketer.kyc_status === 'rejected') {
+       marketer.kyc_status = 'pending';
+    }
+    
+    await marketer.save();
+    logger.info(`MarketerController.uploadKYCDoc - Doc uploaded for marketer: ${id}`);
+    res.json({ status: true, marketer });
+  } catch (err) {
+    logger.error(`MarketerController.uploadKYCDoc - Error: ${err.message}`);
     next(err);
   }
 };

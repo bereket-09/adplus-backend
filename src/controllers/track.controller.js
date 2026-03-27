@@ -94,6 +94,8 @@ exports.start = async (req, res, next) => {
       true // regenerate secure key
     );
 
+    logger.info(`TrackController.start - User started watching token ${token}`);
+
     res.json({
       status: true,
       watch_status: 'started',
@@ -223,6 +225,37 @@ exports.ping = async (req, res, next) => {
 
   } catch (err) {
     logger.error(`WatchLinkController.ping - ${err.message}`);
+    next(err);
+  }
+};
+
+/**
+ * Ad Click Tracking
+ */
+exports.click = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    if (!token) return res.status(400).json({ status: false, error: 'token required' });
+
+    const watch = await WatchLink.findOne({ token });
+    if (!watch) return res.status(404).json({ status: false, error: 'token not found' });
+
+    const ad = await require('../models/ad.model').findById(watch.ad_id);
+    if (!ad) return res.status(404).json({ status: false, error: 'Ad not found' });
+
+    // Mark clicked
+    watch.clicked = true;
+    watch.clicked_at = new Date();
+    await watch.save();
+
+    // If billing_model is 'view_and_click', deduct an additional fee
+    if (ad.billing_model === 'view_and_click') {
+      await RewardEngine.deductClickBudget(watch.marketer_id, ad._id);
+    }
+
+    res.json({ status: true, message: 'Click recorded' });
+  } catch (err) {
+    logger.error(`WatchLinkController.click - ${err.message}`);
     next(err);
   }
 };

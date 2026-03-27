@@ -21,7 +21,9 @@ const watchLinkSchema = new mongoose.Schema({
   fraud_flags: [Object],
   last_position: { type: Number, default: 0 },
   max_position_reached: { type: Number, default: 0 },
-  drop_off_point: { type: Number }
+  drop_off_point: { type: Number },
+  clicked: { type: Boolean, default: false },
+  clicked_at: { type: Date }
 });
 
 // TTL Index

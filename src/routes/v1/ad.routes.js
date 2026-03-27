@@ -1,36 +1,38 @@
 const express = require('express');
 const router = express.Router();
 const AdController = require('../../controllers/ad.controller');
+const TrackController = require('../../controllers/track.controller');
+const { verifyToken, isAdmin, isMarketer } = require('../../middleware/auth.middleware');
 const multer = require('multer');
-const { verifyToken, isAdmin } = require('../../middleware/auth.middleware');
 
-// Use memory storage so req.file.buffer is available for Supabase upload
-// (Supabase JS v2 uses Web fetch which cannot consume Node.js ReadStreams)
+// Memory storage for Supabase upload
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Ad management routes (verifyToken is now handled globally in v1/index.js)
+// PUBLIC ROUTES (No auth required for tracking)
+router.post('/start', TrackController.start);
+router.post('/complete', TrackController.complete);
+router.post('/ping', TrackController.ping);
+router.post('/click/:token', TrackController.click); // New Click Tracking
+router.get('/video/:id/:file?', AdController.getVideo);
 
-// Marketer or Admin can list ads for a specific marketer
+// MARKETER & SHARED ROUTES (Auth Required)
+router.use(verifyToken);
+
+// Move these BEFORE router.use(isAdmin) so marketers can access them
+router.post('/create', upload.fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'banner', maxCount: 1 }
+]), AdController.createWithUpload);
+
 router.get('/marketer/:marketerId', AdController.listByMarketer);
 
 // Admin-only routes
 router.use(isAdmin);
 
-// Multer parses the FormData fields automatically into req.body
-router.post('/create', upload.single('video'), AdController.createWithUpload);
+// LIST ALL ADS (Global Admin)
+router.get('/list', AdController.list);
 
 // APPROVE AD
 router.post('/approve', AdController.approve);
-
-// LIST ADS
-router.get('/list', AdController.list);
-
-// UPDATE AD
-router.put('/:adId', AdController.update);
-
-// GET /api/v1/ad/video/:adId
-router.get('/video/:adId', AdController.getVideo);
-
-router.get('/marketer/:marketerId', AdController.listByMarketer);
 
 module.exports = router;

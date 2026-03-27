@@ -11,6 +11,7 @@ const marketerAuthRoutes = require('./auth.marketer.routes');
 const adminAuthRoutes = require('./auth.admin.routes');
 const systemConfigRoutes = require('./systemConfig.routes');
 const blacklistRoutes = require('./blacklist.routes');
+const billingModelRoutes = require('./billingModel.routes');
 
 const rateLimiter = require('../../utils/rateLimiter');
 const { checkMaintenanceMode } = require('../../middleware/maintenance.middleware');
@@ -27,6 +28,7 @@ router.use(checkMaintenanceMode);
 router.use('/link', rateLimiter.middleware(200, 60_000, 'link'), linkRoutes);
 router.use('/video', rateLimiter.middleware(200, 60_000, 'video'), linkRoutes); // token route uses link controller
 router.use('/track', rateLimiter.middleware(300, 60_000, 'track'), trackRoutes);
+router.use('/ad', adRoutes);
 
 // Health check endpoint (Public)
 router.get('/health', (req, res) => {
@@ -50,10 +52,10 @@ router.use(checkMaintenanceMode);
 
 // Protected module routes
 router.use('/marketer', rateLimiter.middleware(500, 60_000, 'marketer'), marketerRoutes);
-router.use('/ad', rateLimiter.middleware(500, 60_000, 'ad'), adRoutes);
 router.use('/analytics', rateLimiter.middleware(1000, 60_000, 'analytics'), analyticsRoutes);
 router.use('/budget', rateLimiter.middleware(500, 60_000, 'budget'), budgetRoutes);
 router.use('/system-config', rateLimiter.middleware(100, 60_000, 'system'), systemConfigRoutes);
 router.use('/blacklist', rateLimiter.middleware(200, 60_000, 'blacklist'), blacklistRoutes);
+router.use('/billing-models', rateLimiter.middleware(200, 60_000, 'billing'), billingModelRoutes);
 
 module.exports = router;
