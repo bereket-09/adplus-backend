@@ -47,7 +47,7 @@ exports.create = async (req, res, next) => {
 
 exports.register = async (req, res, next) => {
   try {
-    const { name, email, password, company_name, business_reg_number, business_address, contact_info } = req.body;
+    const { name, email, password, company_name, business_reg_number, business_address, contact_info, business_category, contact_person } = req.body;
     logger.info(`MarketerController.register - Registration attempt with email: ${email}`);
 
     const existing = await Marketer.findOne({ email });
@@ -66,6 +66,8 @@ exports.register = async (req, res, next) => {
       business_reg_number,
       business_address,
       contact_info,
+      business_category,
+      contact_person,
       status: 'pending',
       total_budget: 0,
       remaining_budget: 0,
