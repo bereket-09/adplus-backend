@@ -26,7 +26,11 @@ const GROUP = cfg.queue.group;
 function driver() {
   if (cfg.queue.driver === 'redis') return 'redis';
   if (cfg.queue.driver === 'memory') return 'memory';
-  return redis.enabled ? 'redis' : 'memory';
+  // Decide by CONFIG, not live connection state — otherwise enqueue (called on a
+  // request, when Redis is up) and the consumers (started at boot, possibly
+  // before Redis finished connecting) can disagree and split-brain. ioredis
+  // buffers commands until the connection is ready, so this is safe.
+  return redis.isConfigured() ? 'redis' : 'memory';
 }
 
 // ---- in-memory fallback ----
@@ -67,7 +71,12 @@ async function startConsumers(handler, pace) {
   if (d === 'redis') {
     await ensureGroup();
     for (let i = 0; i < cfg.queue.workerConcurrency; i++) {
-      runRedisConsumer(`w-${process.pid}-${i}`, handler, pace);
+      // Each consumer gets its OWN connection: XREADGROUP with BLOCK monopolizes
+      // a connection for its timeout, so sharing one connection with XADD/XLEN
+      // (enqueue, /health) would starve them. Dedicated blocking connections fix it.
+      const conn = redis.rawClient.duplicate();
+      conn.on('error', (e) => logger.error(`triggerQueue.consumerConn - ${e.message}`));
+      runRedisConsumer(conn, `w-${process.pid}-${i}`, handler, pace);
     }
   } else {
     if (memRunning) return;
@@ -78,11 +87,11 @@ async function startConsumers(handler, pace) {
   }
 }
 
-async function runRedisConsumer(name, handler, pace) {
+async function runRedisConsumer(conn, name, handler, pace) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      const res = await redis.rawClient.call(
+      const res = await conn.call(
         'XREADGROUP', 'GROUP', GROUP, name, 'COUNT', String(cfg.queue.batchSize),
         'BLOCK', '5000', 'STREAMS', STREAM, '>'
       );

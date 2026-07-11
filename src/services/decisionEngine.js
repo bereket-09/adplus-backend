@@ -21,6 +21,8 @@ const WatchLink = require('../models/watchLink.model');
 const AuditLog = require('../models/audit.model');
 const { generateToken } = require('../utils/token');
 const blacklistCheck = require('../utils/blacklistCheck');
+const fraudEngine = require('../fraud/fraudEngine');
+const fingerprint = require('../fraud/fingerprint');
 const frequency = require('./frequency');
 const adSelector = require('./adSelector');
 const eligibility = require('./eligibility');
@@ -86,6 +88,17 @@ async function decide(input) {
   if (bl.blocked) {
     audit({ type: 'blacklist_blocked', msisdn, ip: ctx.ip, fraud_detected: true, request_payload: { reasons: bl.reasons } });
     return { action: 'suppressed', reason: 'blacklisted' };
+  }
+
+  // 1.5) Fraud engine — the single highest-leverage gate (blocks SMS + budget
+  // for both OCS-triggered and manual/simulator flows). Fail-open by design.
+  if (!opt.bypassFraud) {
+    const subject = fingerprint.buildSubject({ ip: ctx.ip }, { msisdn });
+    const fraud = await fraudEngine.evaluate('decide', subject);
+    if (fraud.decision === 'deny') {
+      audit({ type: 'fraud_suppressed', msisdn, ip: ctx.ip, fraud_detected: true, request_payload: { score: fraud.score, reasons: fraud.reasons } });
+      return { action: 'suppressed', reason: 'fraud', score: fraud.score, fraud_reasons: fraud.reasons };
+    }
   }
 
   // 2) Existing active link → resend or suppress (never double-reserve)

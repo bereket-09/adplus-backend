@@ -11,6 +11,7 @@ const adSchema = new mongoose.Schema({
   description: String,
   reward_description: { type: String, default: '+ 50 GOLD' }, // e.g. "+ 50 Gold" or "100MB Data"
   video_file_path: String,
+  duration_seconds: { type: Number, default: 0 }, // enables watch-timing fraud signals
   
   // New Banner & CTA fields
   banner_url: String,

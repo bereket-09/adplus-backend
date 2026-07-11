@@ -13,6 +13,7 @@ const systemConfigRoutes = require('./systemConfig.routes');
 const blacklistRoutes = require('./blacklist.routes');
 const billingModelRoutes = require('./billingModel.routes');
 const triggerRoutes = require('./trigger.routes');
+const fraudRoutes = require('./fraud.routes');
 
 const rateLimiter = require('../../utils/rateLimiter');
 const { checkMaintenanceMode } = require('../../middleware/maintenance.middleware');
@@ -68,5 +69,6 @@ router.use('/budget', rateLimiter.middleware(500, 60_000, 'budget'), budgetRoute
 router.use('/system-config', rateLimiter.middleware(100, 60_000, 'system'), systemConfigRoutes);
 router.use('/blacklist', rateLimiter.middleware(200, 60_000, 'blacklist'), blacklistRoutes);
 router.use('/billing-models', rateLimiter.middleware(200, 60_000, 'billing'), billingModelRoutes);
+router.use('/fraud', rateLimiter.middleware(500, 60_000, 'fraud'), fraudRoutes);
 
 module.exports = router;

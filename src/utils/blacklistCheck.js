@@ -57,7 +57,7 @@ async function isIpBlacklisted(ip) {
 /**
  * Full check: returns { blocked, reasons[] }
  */
-async function checkAll({ msisdn, ip, userAgent }) {
+async function checkAll({ msisdn, ip, userAgent, device }) {
     const bl = await loadBlacklist();
     const reasons = [];
 
@@ -66,6 +66,9 @@ async function checkAll({ msisdn, ip, userAgent }) {
     }
     if (ip && bl.ip.has(ip)) {
         reasons.push({ type: 'ip', value: ip, severity: bl.severityMap[`ip:${ip}`] || 'block' });
+    }
+    if (device && bl.device.has(device)) {
+        reasons.push({ type: 'device', value: device, severity: bl.severityMap[`device:${device}`] || 'block' });
     }
     if (userAgent && bl.user_agent.has(userAgent)) {
         reasons.push({ type: 'user_agent', value: userAgent, severity: bl.severityMap[`user_agent:${userAgent}`] || 'warn' });

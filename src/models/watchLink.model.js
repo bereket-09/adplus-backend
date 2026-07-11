@@ -43,7 +43,8 @@ const watchLinkSchema = new mongoose.Schema({
   drop_off_point: { type: Number },
   clicked: { type: Boolean, default: false },
   clicked_at: { type: Date },
-  clicked_charged: { type: Boolean, default: false }
+  clicked_charged: { type: Boolean, default: false },
+  has_fraud: { type: Boolean, default: false } // set when any fraud signal flags this watch
 });
 
 // TTL Index — delete at purge_at (7d), giving the reservation sweeper time to
@@ -57,6 +58,8 @@ watchLinkSchema.index({ ad_id: 1, created_at: -1 });
 watchLinkSchema.index({ marketer_id: 1, created_at: -1 });
 watchLinkSchema.index({ status: 1, created_at: -1 });
 watchLinkSchema.index({ ad_id: 1, status: 1 });
+// Tiny partial index — only flagged watches — for the fraud dashboard.
+watchLinkSchema.index({ has_fraud: 1, created_at: -1 }, { partialFilterExpression: { has_fraud: true } });
 
 watchLinkSchema.methods.addAudit = async function (type, fraud = false, details = null) {
   await AuditLog.create({

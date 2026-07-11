@@ -6,6 +6,8 @@ const RewardEngine = require('../utils/rewardEngine');
 const budgetLedger = require('../services/budgetLedger');
 const rewardGateway = require('../integrations/reward');
 const frequency = require('../services/frequency');
+const fraudEngine = require('../fraud/fraudEngine');
+const fingerprint = require('../fraud/fingerprint');
 const Reward = require('../models/reward.model');
 const Ad = require('../models/ad.model');
 const logger = require('../utils/logger'); // <-- add logger
@@ -18,10 +20,12 @@ async function updateWatchSession(watch, metaDecoded, nextStatus, timeField, reg
   const fraudFlags = [];
 
   if (metaDecoded.payload.ip !== watch.meta_json?.ip && watch.meta_json) fraudFlags.push('IP_MISMATCH');
-  if (metaDecoded.payload.deviceInfo?.model !== watch.meta_json?.deviceInfo?.model && watch.meta_json) fraudFlags.push('DEVICE_CHANGE');
+  // Bugfix: payload uses `device`, not `deviceInfo` — this check never ran before.
+  if (metaDecoded.payload.device?.model !== watch.meta_json?.device?.model && watch.meta_json) fraudFlags.push('DEVICE_CHANGE');
   if (metaDecoded.payload.userAgent !== watch.meta_json?.userAgent && watch.meta_json) fraudFlags.push('USER_AGENT_CHANGE');
 
   watch.fraud_flags = fraudFlags;
+  if (fraudFlags.length) watch.has_fraud = true;
   watch.meta_json = metaDecoded.payload;
 
   // Update timestamp + state
@@ -89,6 +93,15 @@ exports.start = async (req, res, next) => {
     const metaDecoded = Meta.decodeAndValidate(meta, req);
     if (!metaDecoded.valid) {
       return res.status(400).json({ status: false, error: 'invalid metadata' });
+    }
+
+    // Fraud gate — anchors started_at for the fast-complete check downstream.
+    const startSubject = fingerprint.buildSubject(metaDecoded.payload, { msisdn: watch.msisdn, token, watch });
+    const startFraud = await fraudEngine.evaluate('start', startSubject);
+    if (startFraud.decision === 'deny') {
+      await WatchLink.updateOne({ _id: watch._id }, { $set: { has_fraud: true } });
+      logger.warn(`TrackController.start - fraud denied token ${token} score=${startFraud.score} [${startFraud.reasons}]`);
+      return res.status(403).json({ status: false, error: 'session_denied' });
     }
 
     const { newSecureKey } = await updateWatchSession(
@@ -164,6 +177,23 @@ exports.complete = async (req, res, next) => {
       true // regenerate secure key after complete
     );
 
+    // ---- Fraud gate (strictest — reward-bearing). Runs fast-complete / no-progress /
+    // reward-farming etc. On deny: release the reservation and grant nothing. ----
+    const adForFraud = await Ad.findById(watch.ad_id).select('duration_seconds').lean();
+    const completeSubject = fingerprint.buildSubject(metaDecoded.payload, { msisdn: watch.msisdn, token: watch.token, watch });
+    const completeFraud = await fraudEngine.evaluate('complete', completeSubject, { durationSeconds: adForFraud?.duration_seconds || 0 });
+    if (completeFraud.decision === 'deny') {
+      const released = await WatchLink.updateOne(
+        { _id: watch._id, budget_state: 'reserved' },
+        { $set: { budget_state: 'released', has_fraud: true } }
+      );
+      if (released.modifiedCount === 1) {
+        await budgetLedger.release(watch.ad_id, budgetLedger.toCents(watch.reserved_amount));
+      }
+      logger.warn(`TrackController.complete - fraud denied reward token ${watch.token} score=${completeFraud.score} [${completeFraud.reasons}]`);
+      return res.status(403).json({ status: false, error: 'reward_denied', reason: 'fraud' });
+    }
+
     // ---- Budget COMMIT + reward fulfilment (idempotent on budget_state) ----
     // Only a link whose budget is still 'reserved' can be committed, so a
     // double-complete or a replay can never deduct twice or reward twice.
@@ -223,6 +253,9 @@ exports.complete = async (req, res, next) => {
         reward_record_id: rewardRecordId,
         reward_provider_ref: grant.provider_ref || null,
       } });
+
+      // Count this legitimate completion toward reward-farming velocity limits.
+      fraudEngine.recordAllowedCompletion(completeSubject).catch(() => {});
 
       if (!grant.ok) {
         logger.warn(`TrackController.complete - reward grant FAILED for ${watch.msisdn} token ${watch.token}: ${grant.error}`);
@@ -303,6 +336,15 @@ exports.click = async (req, res, next) => {
 
     const watch = await WatchLink.findOne({ token });
     if (!watch) return res.status(404).json({ status: false, error: 'token not found' });
+
+    // Fraud gate — uses the stored open-time meta (no meta on the click request).
+    const clickSubject = fingerprint.buildSubject(watch.meta_json || {}, { msisdn: watch.msisdn, token: watch.token, watch, ip: watch.ip });
+    const clickFraud = await fraudEngine.evaluate('click', clickSubject);
+    if (clickFraud.decision === 'deny') {
+      await WatchLink.updateOne({ _id: watch._id }, { $set: { has_fraud: true } });
+      logger.warn(`TrackController.click - fraud denied token ${token} score=${clickFraud.score} [${clickFraud.reasons}]`);
+      return res.status(403).json({ status: false, error: 'click_denied' });
+    }
 
     const ad = await require('../models/ad.model').findById(watch.ad_id);
     if (!ad) return res.status(404).json({ status: false, error: 'Ad not found' });

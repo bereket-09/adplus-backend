@@ -24,6 +24,7 @@ const models = {
   Reward: require('../src/models/reward.model'),
   MarketerTransaction: require('../src/models/marketerTransaction.model'),
   AuditLog: require('../src/models/audit.model'),
+  FraudDetection: require('../src/models/fraudDetection.model'),
   Blacklist: require('../src/models/blacklist.model'),
   BillingModel: require('../src/models/billingModel.model'),
   SystemConfig: require('../src/models/systemConfig.model'),

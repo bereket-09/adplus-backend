@@ -11,6 +11,8 @@ const logger = require('../utils/logger');
 const blacklistCheck = require('../utils/blacklistCheck');
 const cache = require('../utils/internalCache');
 const DecisionEngine = require('../services/decisionEngine');
+const fraudEngine = require('../fraud/fraudEngine');
+const fingerprint = require('../fraud/fingerprint');
 const { normalizeMsisdn, humanReason } = require('../utils/msisdn');
 
 /**
@@ -106,6 +108,16 @@ exports.getVideoByToken = async (req, res, next) => {
     //   logger.error(`WatchLinkController.getVideoByToken - msisdn mismatch for token ${token}, expected ${watch.msisdn}, got ${meta.payload.msisdn}`);
     //   return res.status(403).json({ status: false, error: 'invalid Link or user status' });
     // }
+
+    // Fraud gate at video open — first point a real device fingerprint exists,
+    // so this seeds the SIM-farm fan-out sets. Fail-open.
+    const fSubject = fingerprint.buildSubject(meta.payload, { msisdn: watch.msisdn, token, watch });
+    const fraud = await fraudEngine.evaluate('open', fSubject);
+    if (fraud.decision === 'deny') {
+      logger.warn(`getVideoByToken - fraud denied token ${token} score=${fraud.score} [${fraud.reasons}]`);
+      return res.status(403).json({ status: false, error: 'link unavailable' });
+    }
+    if (fraud.action !== 'allow') watch.has_fraud = true;
 
     const ip = meta.payload.ip || req.ip;
     const ua = meta.payload.userAgent || '';

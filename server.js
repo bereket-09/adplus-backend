@@ -5,6 +5,7 @@ const logger = require('./src/utils/logger');
 const redis = require('./src/lib/redis');
 const decisionWorker = require('./src/workers/decisionWorker');
 const reservationSweeper = require('./src/workers/reservationSweeper');
+const fraudAnalyzer = require('./src/workers/fraudAnalyzer');
 const WatchLink = require('./src/models/watchLink.model');
 
 const PORT = process.env.PORT || 3000;
@@ -66,6 +67,7 @@ async function start() {
   if (WORKERS_ENABLED) {
     await decisionWorker.start();
     reservationSweeper.start();
+    fraudAnalyzer.start();
   } else {
     logger.info('startup - WORKERS_ENABLED=false, this node serves API only');
   }

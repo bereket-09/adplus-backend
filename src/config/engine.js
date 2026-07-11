@@ -114,4 +114,75 @@ module.exports = {
     // Shared secret the OCS includes on trigger calls (header x-ocs-key).
     triggerKey: process.env.OCS_TRIGGER_KEY || '',
   },
+
+  // ---- Fraud engine ------------------------------------------------------
+  // Real-time, Redis-O(1), fail-open risk scoring. Every knob is tunable.
+  fraud: {
+    enabled: bool(process.env.FRAUD_ENABLED, true),
+    failOpen: bool(process.env.FRAUD_FAIL_OPEN, true),
+
+    // score → action bands
+    thresholds: {
+      throttle: num(process.env.FR_T_THROTTLE, 25),
+      softBlock: num(process.env.FR_T_SOFT, 45),
+      challenge: num(process.env.FR_T_CHALLENGE, 65),
+      hardBlock: num(process.env.FR_T_HARD, 85),
+    },
+
+    // per-entity velocity token buckets (rate = req/sec, burst = bucket size)
+    velocity: {
+      msisdnRps: num(process.env.FR_VEL_MSISDN_RPS, 0.5), msisdnBurst: num(process.env.FR_VEL_MSISDN_BURST, 6),
+      ipRps: num(process.env.FR_VEL_IP_RPS, 3), ipBurst: num(process.env.FR_VEL_IP_BURST, 30),
+      devRps: num(process.env.FR_VEL_DEV_RPS, 1), devBurst: num(process.env.FR_VEL_DEV_BURST, 10),
+    },
+
+    // SIM-farm fan-out (distinct msisdns per ip/device)
+    simfarm: {
+      ipMax: num(process.env.FR_SF_IP_MAX, 8), ipHardMax: num(process.env.FR_SF_IP_HARD, 20),
+      devMax: num(process.env.FR_SF_DEV_MAX, 5), devHardMax: num(process.env.FR_SF_DEV_HARD, 15),
+      ipBurstMax: num(process.env.FR_SF_IP_BURST_MAX, 4), fanoutTtlSec: num(process.env.FR_SF_TTL, 86400),
+    },
+
+    rewardFarm: { factor: num(process.env.FR_RF_FACTOR, 2), ipHourMax: num(process.env.FR_RF_IP_HOUR, 10) },
+
+    // watch-timing anti-fraud (needs Ad.duration_seconds)
+    timing: {
+      minWatchRatio: num(process.env.FR_MIN_WATCH_RATIO, 0.6),
+      minProgressRatio: num(process.env.FR_MIN_PROGRESS, 0.5),
+    },
+
+    rotation: { ipMax: num(process.env.FR_ROT_IP_MAX, 4), uaMax: num(process.env.FR_ROT_UA_MAX, 3), windowSec: num(process.env.FR_ROT_WINDOW, 3600) },
+
+    // Ethiopia bounding box [minLat,minLon,maxLat,maxLon]; impossible-travel jump
+    geo: {
+      bbox: (process.env.FR_GEO_BBOX || '3.4,33.0,15.0,48.0').split(',').map(Number),
+      jumpKm: num(process.env.FR_GEO_JUMP_KM, 500),
+      jumpWindowSec: num(process.env.FR_GEO_JUMP_WIN, 3600),
+      gridDecimals: num(process.env.FR_GEO_GRID, 2),
+    },
+
+    reputation: {
+      flagThreshold: num(process.env.FR_REP_FLAG, 50),
+      halfLifeSec: num(process.env.FR_REP_HALFLIFE, 604800),
+      bumpSoft: num(process.env.FR_REP_BUMP_SOFT, 5),
+      bumpHard: num(process.env.FR_REP_BUMP_HARD, 20),
+    },
+
+    newSub: { ageSec: num(process.env.FR_NEWSUB_AGE, 86400), multiplier: num(process.env.FR_NEWSUB_MULT, 1.25) },
+
+    autoBlacklist: {
+      offenseWindowDays: num(process.env.FR_OFF_WINDOW_DAYS, 7),
+      warnTtlSec: num(process.env.FR_BL_WARN_TTL, 3600),
+      escalateHours: (process.env.FR_BL_ESCALATE || '6,24,72').split(',').map(Number),
+      permanentAtOffense: num(process.env.FR_BL_PERM_AT, 5),
+    },
+
+    analyzer: {
+      enabled: bool(process.env.FR_ANALYZER_ENABLED, true),
+      intervalSec: num(process.env.FR_AN_INTERVAL, 60),
+      lookbackMin: num(process.env.FR_AN_LOOKBACK, 15),
+      deviceFanoutMax: num(process.env.FR_AN_DEV_FANOUT, 10),
+      ipFanoutMax: num(process.env.FR_AN_IP_FANOUT, 25),
+    },
+  },
 };
