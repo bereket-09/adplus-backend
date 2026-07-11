@@ -3,6 +3,11 @@ const WatchLink = require('../models/watchLink.model');
 const Meta = require('../utils/meta');
 const AuditLog = require('../models/audit.model');
 const RewardEngine = require('../utils/rewardEngine');
+const budgetLedger = require('../services/budgetLedger');
+const rewardGateway = require('../integrations/reward');
+const frequency = require('../services/frequency');
+const Reward = require('../models/reward.model');
+const Ad = require('../models/ad.model');
 const logger = require('../utils/logger'); // <-- add logger
 
 /**
@@ -159,21 +164,69 @@ exports.complete = async (req, res, next) => {
       true // regenerate secure key after complete
     );
 
-    const marketer = await RewardEngine.deductBudget(watch.marketer_id, watch.ad_id);
-    const reward = await RewardEngine.grantReward(watch.msisdn, watch.token);
+    // ---- Budget COMMIT + reward fulfilment (idempotent on budget_state) ----
+    // Only a link whose budget is still 'reserved' can be committed, so a
+    // double-complete or a replay can never deduct twice or reward twice.
+    let rewardStatus = watch.reward_status || 'pending';
+    let rewardOfferId = watch.reward_offer_id || null;
+    let rewardRecordId = watch.reward_record_id || null;
 
-    watch.reward_granted = reward.granted;
-    watch.reward_offer_id = reward.offer_id;
-    watch.reward_record_id = reward.reward_id;
-    watch.save();
+    if (watch.budget_state === 'reserved') {
+      // 1) Turn the reservation into durable spend (Mongo ledger + wallet).
+      await budgetLedger.commit({
+        marketerId: watch.marketer_id,
+        adId: watch.ad_id,
+        amountCents: budgetLedger.toCents(watch.reserved_amount),
+        reason: 'Ad watched deduction',
+        description: `Completed watch ${watch.token}`,
+      });
+      watch.budget_state = 'committed';
+
+      // 2) Engagement signal (feeds frequency/eligibility scoring).
+      await frequency.recordView(watch.msisdn);
+
+      // 3) Synchronous reward grant to ETC (data/airtime provisioning).
+      const ad = await Ad.findById(watch.ad_id).lean();
+      rewardOfferId = `OFFER-${watch.token.slice(0, 8).toUpperCase()}`;
+      const grant = await rewardGateway.grant({
+        msisdn: watch.msisdn,
+        ad,
+        reward_description: ad ? ad.reward_description : null,
+        offer_id: rewardOfferId,
+        token: watch.token,
+      });
+      rewardStatus = grant.status;
+
+      const rewardDoc = await Reward.create({
+        msisdn: watch.msisdn,
+        token: watch.token,
+        ad_id: watch.ad_id,
+        offer_id: rewardOfferId,
+        status: grant.status === 'granted' ? 'granted' : 'failed',
+      });
+      rewardRecordId = rewardDoc._id;
+
+      watch.reward_granted = grant.ok;
+      watch.reward_status = grant.status;
+      watch.reward_offer_id = rewardOfferId;
+      watch.reward_record_id = rewardRecordId;
+      watch.reward_provider_ref = grant.provider_ref || null;
+      await watch.save();
+
+      if (!grant.ok) {
+        logger.warn(`TrackController.complete - reward grant FAILED for ${watch.msisdn} token ${watch.token}: ${grant.error}`);
+      }
+    } else {
+      logger.info(`TrackController.complete - budget already '${watch.budget_state}' for ${watch.token}, skipping double-commit`);
+    }
 
     res.json({
       status: true,
       watch_status: 'completed',
       fraud_flags: watch.fraud_flags,
-      reward: reward.granted ? 'granted' : 'not_granted',
-      reward_offer_id: reward.offer_id,
-      reward_record_id: reward.reward_id,
+      reward: rewardStatus === 'granted' ? 'granted' : rewardStatus,
+      reward_offer_id: rewardOfferId,
+      reward_record_id: rewardRecordId,
       secure_key: newSecureKey // next transport key
     });
 
@@ -248,9 +301,21 @@ exports.click = async (req, res, next) => {
     watch.clicked_at = new Date();
     await watch.save();
 
-    // If billing_model is 'view_and_click', deduct an additional fee
-    if (ad.billing_model === 'view_and_click') {
-      await RewardEngine.deductClickBudget(watch.marketer_id, ad._id);
+    // If billing_model is 'view_and_click', charge the click fee atomically
+    // (reserve from the live counter, then commit to durable spend).
+    if (ad.billing_model === 'view_and_click' && !watch.clicked_charged) {
+      const r = await budgetLedger.reserveClick(ad);
+      if (r.ok && r.amountCents > 0) {
+        await budgetLedger.commit({
+          marketerId: watch.marketer_id,
+          adId: ad._id,
+          amountCents: r.amountCents,
+          reason: 'Ad click deduction',
+          description: `Click on ad ${ad._id} (${watch.token})`,
+        });
+        watch.clicked_charged = true;
+        await watch.save();
+      }
     }
 
     res.json({ status: true, message: 'Click recorded' });

@@ -1,0 +1,9 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+*.log
+build_output*.log
+cmd_build_output*.log
+deploy/*.log

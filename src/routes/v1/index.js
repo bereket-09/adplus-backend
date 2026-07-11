@@ -12,6 +12,7 @@ const adminAuthRoutes = require('./auth.admin.routes');
 const systemConfigRoutes = require('./systemConfig.routes');
 const blacklistRoutes = require('./blacklist.routes');
 const billingModelRoutes = require('./billingModel.routes');
+const triggerRoutes = require('./trigger.routes');
 
 const rateLimiter = require('../../utils/rateLimiter');
 const { checkMaintenanceMode } = require('../../middleware/maintenance.middleware');
@@ -30,14 +31,24 @@ router.use('/video', rateLimiter.middleware(200, 60_000, 'video'), linkRoutes); 
 router.use('/track', rateLimiter.middleware(300, 60_000, 'track'), trackRoutes);
 router.use('/ad', adRoutes);
 
+// OCS trigger ingestion (authenticated by x-ocs-key inside the controller).
+// High limit — this is the morning-burst entry point; it only enqueues.
+router.use('/trigger', rateLimiter.middleware(20_000, 60_000, 'trigger'), triggerRoutes);
+
 // Health check endpoint (Public)
-router.get('/health', (req, res) => {
-    const AdEngine = require('../../utils/adEngine');
+router.get('/health', async (req, res) => {
+    const decisionWorker = require('../../workers/decisionWorker');
+    const triggerQueue = require('../../services/triggerQueue');
+    const redis = require('../../lib/redis');
+    let queueDepth = -1;
+    try { queueDepth = await triggerQueue.depth(); } catch (e) { /* ignore */ }
     res.json({
         status: true,
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
-        engine: AdEngine.getStats()
+        redis: redis.enabled ? 'connected' : (redis.isConfigured() ? 'configured' : 'in-memory-fallback'),
+        queue: { driver: triggerQueue.driver(), depth: queueDepth },
+        worker: decisionWorker.getStats()
     });
 });
 

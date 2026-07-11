@@ -1,0 +1,70 @@
+# Local / small-VM stack for the AdPlus backend.
+#   - mongo  : durable ledger + campaigns + audits
+#   - redis  : authoritative budget counters, pacing, frequency, trigger queue
+#   - api    : Express app + decision workers (WORKERS_ENABLED=true)
+#   - video  : Nginx HLS origin for on-prem, zero-rated ad streaming
+#
+# For real 3-VM deployment, split these onto VM1 (api+redis), VM2 (mongo),
+# VM3 (video). Redis persistence (AOF) is on so counters survive a restart.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/video_ads
+      - REDIS_URL=redis://redis:6379
+      - WORKERS_ENABLED=true
+    depends_on: [mongo, redis]
+    ports:
+      - "3001:3001"
+
+  # Optional dedicated worker fleet (API-only api node + these). Scale with --scale.
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/video_ads
+      - REDIS_URL=redis://redis:6379
+      - WORKERS_ENABLED=true
+    command: ["node", "server.js"]
+    depends_on: [mongo, redis]
+    deploy:
+      replicas: 0   # bump to run a separate worker fleet; set api WORKERS_ENABLED=false
+
+  video:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx-video.conf:/etc/nginx/conf.d/default.conf:ro
+      - video_hls:/srv/hls:ro
+    ports:
+      - "8080:8080"
+
+volumes:
+  mongo_data:
+  redis_data:
+  video_hls:

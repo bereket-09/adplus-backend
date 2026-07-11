@@ -1,10 +1,15 @@
-exports.decodeAndValidate = (base64Str, req = {}) => {
+exports.decodeAndValidate = (base64Str, req = {}, opts = {}) => {
+  // opts.requireMsisdn (default true): the /video/:token entry point can pass
+  // false because the token itself already identifies the subscriber — the
+  // client legitimately doesn't know its own MSISDN yet at that point.
+  const requireMsisdn = opts.requireMsisdn !== false;
   try {
     const buff = Buffer.from(base64Str, "base64");
     const payload = JSON.parse(buff.toString("utf8"));
 
     /* ---------------- Required top-level fields ---------------- */
-    const requiredTopLevel = ["msisdn", "ip", "userAgent", "device", "location"];
+    const requiredTopLevel = ["ip", "userAgent", "device", "location"];
+    if (requireMsisdn) requiredTopLevel.unshift("msisdn");
     for (const key of requiredTopLevel) {
       if (!payload[key]) {
         return { valid: false, report: `missing ${key}` };
@@ -31,7 +36,10 @@ exports.decodeAndValidate = (base64Str, req = {}) => {
     }
 
     /* ---------------- Sanity checks ---------------- */
-    if (!/^251\d{9}$/.test(payload.msisdn)) {
+    if (payload.msisdn !== undefined && payload.msisdn !== null && !/^251\d{9}$/.test(payload.msisdn)) {
+      return { valid: false, report: "invalid msisdn format" };
+    }
+    if (requireMsisdn && !/^251\d{9}$/.test(payload.msisdn || "")) {
       return { valid: false, report: "invalid msisdn format" };
     }
 

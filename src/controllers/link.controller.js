@@ -10,139 +10,57 @@ const bcrypt = require('bcryptjs');
 const logger = require('../utils/logger');
 const blacklistCheck = require('../utils/blacklistCheck');
 const cache = require('../utils/internalCache');
+const DecisionEngine = require('../services/decisionEngine');
+const { normalizeMsisdn, humanReason } = require('../utils/msisdn');
 
+/**
+ * Manual / simulator link creation. Delegates to the unified DecisionEngine so it
+ * shares the exact budget-reservation, frequency, selection and SMS logic used by
+ * the OCS pipeline — no divergent code path. Pacing is bypassed (this is an
+ * on-demand action, not a paced OCS burst); pass `force:true` to also bypass
+ * frequency caps for repeat testing.
+ */
 exports.createLink = async (req, res, next) => {
   try {
-    const { msisdn } = req.body;
-    logger.info(`WatchLinkController.createLink - Received request to create link for msisdn ${msisdn}`);
+    const { msisdn: rawMsisdn, tags, force } = req.body;
+    logger.info(`WatchLinkController.createLink - Received request for msisdn ${rawMsisdn}`);
 
-    if (!msisdn) {
-      logger.error(`WatchLinkController.createLink - msisdn required`);
+    if (!rawMsisdn) {
       return res.status(400).json({ status: false, error: 'msisdn required' });
     }
-
-    // --- BLACKLIST CHECK ---
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '';
-    const blCheck = await blacklistCheck.checkAll({ msisdn, ip });
-    if (blCheck.blocked) {
-      logger.warn(`WatchLinkController.createLink - BLOCKED msisdn=${msisdn} ip=${ip} reasons=${JSON.stringify(blCheck.reasons)}`);
-      await AuditLog.create({
-        type: 'blacklist_blocked',
-        msisdn,
-        timestamp: new Date(),
-        ip,
-        fraud_detected: true,
-        request_payload: { reasons: blCheck.reasons }
-      });
-      return res.status(403).json({ status: false, error: 'Access denied' });
+    const msisdn = normalizeMsisdn(rawMsisdn);
+    if (!msisdn) {
+      return res.status(400).json({ status: false, error: 'invalid Ethiopian MSISDN', reason: 'invalid_msisdn' });
     }
 
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    // -------------------------------------------
-    // CHECK IF EXISTING ACTIVE TOKEN EXISTS TODAY
-    // -------------------------------------------
-    const existing = await WatchLink.findOne({
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '';
+    const result = await DecisionEngine.decide({
       msisdn,
-      status: { $in: ['pending', 'opened', 'started'] },
-      created_at: { $gte: startOfDay }
+      source: 'simulator',
+      ctx: { ip, tags },
+      options: { allowResend: true, bypassPacing: true, bypassFrequency: !!force },
     });
 
-    if (existing) {
-      logger.debug(`WatchLinkController.createLink - Existing token ${existing.token} found for msisdn ${msisdn}`);
-
-      // -----------------------------------------------------
-      // MOCK SMS TRIGGER (ALWAYS RESEND WHEN LINK REQUESTED)
-      // -----------------------------------------------------
-      logger.info(`SMS-MOCK: Sending SMS to ${msisdn} with link ${API_DOMAIN}/watch/${existing.token}`);
-
-      await AuditLog.create({
-        type: 'sms_sent',
-        msisdn,
-        token: existing.token,
-        ad_id: existing.ad_id,
-        marketer_id: existing.marketer_id,
-        timestamp: new Date(),
-        note: 'SMS resent for existing link'
-      });
-
+    if (result.action === 'sent' || result.action === 'resent') {
       return res.json({
         status: true,
-        token: existing.token,
-        watch_url: `${API_DOMAIN}/watch?v=${existing.token}`,
-        state: existing.status,
-        secure_key: existing.secure_key,
-        createdStatus: "existing"
+        token: result.token,
+        watch_url: result.watch_url,
+        state: 'pending',
+        reward: result.reward,
+        sms_ok: result.sms_ok,
+        createdStatus: result.action === 'resent' ? 'existing' : 'new',
       });
     }
 
-    // -------------------------------------------
-    // NO EXISTING LINK → CREATE NEW ONE
-    // -------------------------------------------
-    const ad = await AdEngine.selectAd(msisdn);
-    if (!ad) {
-      logger.error(`WatchLinkController.createLink - No active ads available`);
-      return res.status(400).json({ status: false, error: 'no active ads available' });
-    }
-
-    const token = generateToken();
-
-    const watch = new WatchLink({
-      token,
-      msisdn,
-      ad_id: ad._id,
-      marketer_id: ad.marketer_id,
-      status: 'pending',
-      created_at: new Date(),
-      expires_at: new Date(Date.now() + 1000 * 60 * 60 * 3) // 3 hours expiry
+    // Suppressed (normal) or error — surface the reason for the simulator UI.
+    const code = result.reason === 'no_active_ads' ? 400 : 200;
+    return res.status(code).json({
+      status: false,
+      suppressed: result.action === 'suppressed',
+      reason: result.reason,
+      error: humanReason(result.reason),
     });
-    await watch.save();
-
-    // -----------------------
-    // AUDIT: LINK CREATED
-    // -----------------------
-    await AuditLog.create({
-      type: 'link_created',
-      msisdn,
-      token,
-      ad_id: ad._id,
-      marketer_id: ad.marketer_id,
-      timestamp: new Date()
-    });
-
-    logger.info(`WatchLinkController.createLink - Link created for msisdn ${msisdn}, token ${token}`);
-
-    // -----------------------
-    // MOCK SMS TRIGGER
-    // -----------------------
-    logger.info(`SMS-MOCK: Sending SMS to ${msisdn} with link ${API_DOMAIN}/watch/${token}`);
-
-    // ----------------------------------------
-    // AUDIT: SMS SENT FOR NEW LINK
-    // ----------------------------------------
-    await AuditLog.create({
-      type: 'sms_sent',
-      msisdn,
-      token,
-      ad_id: ad._id,
-      marketer_id: ad.marketer_id,
-      timestamp: new Date(),
-      note: 'SMS sent for new link'
-    });
-
-    // -----------------------
-    // RETURN RESPONSE
-    // -----------------------
-    return res.json({
-      status: true,
-      token,
-      watch_url: `${API_DOMAIN}/watch?v=${token}`,
-      state: watch.status,
-      secure_key: watch.secure_key,
-      createdStatus: "new"
-    });
-
   } catch (err) {
     logger.error(`WatchLinkController.createLink - Error creating link: ${err.message}`);
     next(err);
@@ -174,7 +92,9 @@ exports.getVideoByToken = async (req, res, next) => {
       return res.status(410).json({ status: false, error: 'Shared Link expired or May have been Already Completed' });
     }
 
-    const meta = Meta.decodeAndValidate(metaBase64, req);
+    // The token already identifies the subscriber, so we don't require the client
+    // to supply an MSISDN here — we hand back the authoritative one below.
+    const meta = Meta.decodeAndValidate(metaBase64, req, { requireMsisdn: false });
     if (!meta.valid) {
       // await watch.addAudit('opened', false, meta.report);
       logger.error(`WatchLinkController.getVideoByToken - Invalid metadata for token ${token}: ${meta.report}`);
@@ -234,12 +154,13 @@ exports.getVideoByToken = async (req, res, next) => {
 
     logger.info(`WatchLinkController.getVideoByToken - Video URL generated for token ${token}, msisdn ${watch.msisdn}`);
 
-    return res.json({ 
-        status: true, 
-        ad_id: String(watch.ad_id), 
-        video_url, 
-        token, 
+    return res.json({
+        status: true,
+        ad_id: String(watch.ad_id),
+        video_url,
+        token,
         secure_key: watch.secure_key,
+        msisdn: watch.msisdn, // authoritative subscriber id (their own number) for meta
         ad // Return the full ad object
     });
   } catch (err) {
