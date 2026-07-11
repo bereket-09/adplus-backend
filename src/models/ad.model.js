@@ -31,4 +31,7 @@ const adSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now }
 });
 
+adSchema.index({ marketer_id: 1 });
+adSchema.index({ status: 1, remaining_budget: 1, priority: -1 }); // getServableAds
+
 module.exports = mongoose.model('Ad', adSchema);

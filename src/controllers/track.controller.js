@@ -171,7 +171,16 @@ exports.complete = async (req, res, next) => {
     let rewardOfferId = watch.reward_offer_id || null;
     let rewardRecordId = watch.reward_record_id || null;
 
-    if (watch.budget_state === 'reserved') {
+    // Atomically CLAIM the commit: flip budget_state reserved->committing in one
+    // conditional update. Two concurrent completes race here and exactly ONE wins
+    // (modifiedCount===1), so budget is spent once and the reward granted once
+    // (TOCTOU fix). The rewards.token unique index is the belt-and-suspenders guard.
+    const claim = await WatchLink.updateOne(
+      { _id: watch._id, budget_state: 'reserved' },
+      { $set: { budget_state: 'committing' } }
+    );
+
+    if (claim.modifiedCount === 1) {
       // 1) Turn the reservation into durable spend (Mongo ledger + wallet).
       await budgetLedger.commit({
         marketerId: watch.marketer_id,
@@ -180,7 +189,6 @@ exports.complete = async (req, res, next) => {
         reason: 'Ad watched deduction',
         description: `Completed watch ${watch.token}`,
       });
-      watch.budget_state = 'committed';
 
       // 2) Engagement signal (feeds frequency/eligibility scoring).
       await frequency.recordView(watch.msisdn);
@@ -206,18 +214,21 @@ exports.complete = async (req, res, next) => {
       });
       rewardRecordId = rewardDoc._id;
 
-      watch.reward_granted = grant.ok;
-      watch.reward_status = grant.status;
-      watch.reward_offer_id = rewardOfferId;
-      watch.reward_record_id = rewardRecordId;
-      watch.reward_provider_ref = grant.provider_ref || null;
-      await watch.save();
+      // Finalize atomically (don't clobber via a stale in-memory save()).
+      await WatchLink.updateOne({ _id: watch._id }, { $set: {
+        budget_state: 'committed',
+        reward_granted: grant.ok,
+        reward_status: grant.status,
+        reward_offer_id: rewardOfferId,
+        reward_record_id: rewardRecordId,
+        reward_provider_ref: grant.provider_ref || null,
+      } });
 
       if (!grant.ok) {
         logger.warn(`TrackController.complete - reward grant FAILED for ${watch.msisdn} token ${watch.token}: ${grant.error}`);
       }
     } else {
-      logger.info(`TrackController.complete - budget already '${watch.budget_state}' for ${watch.token}, skipping double-commit`);
+      logger.info(`TrackController.complete - commit already claimed/done for ${watch.token}, skipping double-commit`);
     }
 
     res.json({

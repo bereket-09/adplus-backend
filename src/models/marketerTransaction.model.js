@@ -12,4 +12,8 @@ const marketerTransactionSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now }
 });
 
+// Indexes — previously none.
+marketerTransactionSchema.index({ marketer_id: 1, created_at: -1 });
+marketerTransactionSchema.index({ type: 1, created_at: -1 });
+
 module.exports = mongoose.model('MarketerTransaction', marketerTransactionSchema);

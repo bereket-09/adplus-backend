@@ -67,17 +67,26 @@ async function commit({ marketerId, adId, amountCents, reason = 'Ad watched dedu
 
   // Durable ledger + wallet mirror. The Redis counter was already decremented at
   // reserve time, so we do NOT touch it here — commit only persists the truth.
-  const marketer = await Marketer.findById(marketerId);
-  const prev = marketer ? marketer.remaining_budget : 0;
-  if (marketer) {
-    marketer.remaining_budget = Math.max(0, prev - amount);
-    await marketer.save();
-  }
+  // Atomic $inc (not read-modify-write) so concurrent commits can't race the wallet.
+  const marketer = await Marketer.findOneAndUpdate(
+    { _id: marketerId },
+    { $inc: { remaining_budget: -amount } },
+    { new: true }
+  );
+  const newWallet = marketer ? marketer.remaining_budget : 0;
+  const prevWallet = newWallet + amount;
 
-  await Ad.updateOne({ _id: adId }, { $inc: { remaining_budget: -amount } });
-  const ad = await Ad.findById(adId).select('remaining_budget marketer_id').lean();
+  // Atomic ad decrement + conditional pause in a single round-trip (no second read,
+  // no race): pipeline update subtracts then flips status to paused when depleted.
+  const ad = await Ad.findOneAndUpdate(
+    { _id: adId },
+    [
+      { $set: { remaining_budget: { $subtract: ['$remaining_budget', amount] } } },
+      { $set: { status: { $cond: [{ $lte: ['$remaining_budget', 0] }, 'paused', '$status'] } } },
+    ],
+    { new: true }
+  );
   if (ad && ad.remaining_budget <= 0) {
-    await Ad.updateOne({ _id: adId }, { status: 'paused' });
     logger.info(`budgetLedger.commit - campaign ${adId} budget depleted, paused`);
   }
 
@@ -85,8 +94,8 @@ async function commit({ marketerId, adId, amountCents, reason = 'Ad watched dedu
     marketer_id: marketerId,
     type: 'deduction',
     amount,
-    previous_budget: prev,
-    new_budget: marketer ? marketer.remaining_budget : 0,
+    previous_budget: prevWallet,
+    new_budget: newWallet,
     reason,
     description: description || `Committed ${amount} ETB for ad ${adId}`,
   });

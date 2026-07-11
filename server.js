@@ -31,7 +31,13 @@ async function migrateWatchLinkIndexes() {
   } catch (e) {
     logger.warn(`startup - watchlink index migration skipped: ${e.message}`);
   }
-  try { await WatchLink.syncIndexes(); } catch (e) { logger.warn(`startup - syncIndexes: ${e.message}`); }
+  // Only auto-sync indexes outside production. In production, index builds (esp.
+  // on the large watchlinks/auditlogs collections and the rewards unique index)
+  // must be run off-peak via `node scripts/ensure-indexes.js`, never on a deploy
+  // during the morning burst.
+  if (process.env.NODE_ENV !== 'production') {
+    try { await WatchLink.syncIndexes(); } catch (e) { logger.warn(`startup - syncIndexes: ${e.message}`); }
+  }
 }
 
 async function start() {
@@ -41,7 +47,16 @@ async function start() {
     logger.warn('startup - REDIS_URL not set; using in-memory fallback (single-process DEV only, NOT safe when scaled)');
   }
 
-  await mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+  await mongoose.connect(MONGO_URI, {
+    maxPoolSize: 20,          // plenty for 2 vCPU; bigger pools just queue on CPU
+    minPoolSize: 5,
+    maxIdleTimeMS: 60000,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+    retryWrites: true,
+    w: 'majority',
+    autoIndex: process.env.NODE_ENV !== 'production', // build indexes off-peak in prod
+  });
   logger.info('startup - MongoDB connected');
 
   await migrateWatchLinkIndexes();

@@ -52,6 +52,11 @@ watchLinkSchema.index({ purge_at: 1 }, { expireAfterSeconds: 0 });
 // Sweeper + resend lookups.
 watchLinkSchema.index({ budget_state: 1, status: 1, expires_at: 1 });
 watchLinkSchema.index({ msisdn: 1, status: 1, expires_at: 1 });
+// Analytics / reporting access paths (previously unindexed → collection scans).
+watchLinkSchema.index({ ad_id: 1, created_at: -1 });
+watchLinkSchema.index({ marketer_id: 1, created_at: -1 });
+watchLinkSchema.index({ status: 1, created_at: -1 });
+watchLinkSchema.index({ ad_id: 1, status: 1 });
 
 watchLinkSchema.methods.addAudit = async function (type, fraud = false, details = null) {
   await AuditLog.create({
