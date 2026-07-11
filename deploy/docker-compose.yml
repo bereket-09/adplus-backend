@@ -22,8 +22,11 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
+    # Reached internally as redis:6379 by the api/worker containers. Not published
+    # to the host by default to avoid clashing with a local Redis. Uncomment to
+    # expose for debugging (pick a free host port):
+    # ports:
+    #   - "6380:6379"
 
   api:
     build:

@@ -16,7 +16,11 @@ const redis = require('../lib/redis');
 const cfg = require('../config/engine');
 const logger = require('../utils/logger');
 
-const STREAM = 'triggers';               // ioredis applies keyPrefix automatically
+// Fully-qualified stream key. We use raw client.call() for all stream commands
+// so ioredis's keyPrefix is bypassed uniformly — mixing prefixed high-level calls
+// (xadd/xreadgroup) with XGROUP, whose key position ioredis can't reliably infer,
+// otherwise creates the group on the wrong key and yields NOGROUP errors.
+const STREAM = (cfg.redis.keyPrefix || '') + 'triggers';
 const GROUP = cfg.queue.group;
 
 function driver() {
@@ -32,7 +36,7 @@ let memRunning = false;
 async function enqueue(candidate) {
   const payload = JSON.stringify(candidate);
   if (driver() === 'redis') {
-    await redis.client.xadd(STREAM, 'MAXLEN', '~', cfg.queue.maxLen, '*', 'p', payload);
+    await redis.rawClient.call('XADD', STREAM, 'MAXLEN', '~', String(cfg.queue.maxLen), '*', 'p', payload);
   } else {
     if (memQ.length < cfg.queue.maxLen) memQ.push(candidate);
   }
@@ -45,7 +49,7 @@ async function enqueueBatch(candidates) {
 
 async function ensureGroup() {
   try {
-    await redis.client.xgroup('CREATE', STREAM, GROUP, '$', 'MKSTREAM');
+    await redis.rawClient.call('XGROUP', 'CREATE', STREAM, GROUP, '$', 'MKSTREAM');
   } catch (e) {
     if (!String(e.message).includes('BUSYGROUP')) throw e;
   }
@@ -78,8 +82,9 @@ async function runRedisConsumer(name, handler, pace) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      const res = await redis.client.xreadgroup(
-        'GROUP', GROUP, name, 'COUNT', cfg.queue.batchSize, 'BLOCK', 5000, 'STREAMS', STREAM, '>'
+      const res = await redis.rawClient.call(
+        'XREADGROUP', 'GROUP', GROUP, name, 'COUNT', String(cfg.queue.batchSize),
+        'BLOCK', '5000', 'STREAMS', STREAM, '>'
       );
       if (!res) continue;
       const [, entries] = res[0];
@@ -92,7 +97,7 @@ async function runRedisConsumer(name, handler, pace) {
         } catch (err) {
           logger.error(`triggerQueue.consumer - ${err.message}`);
         } finally {
-          redis.client.xack(STREAM, GROUP, id).catch(() => {});
+          redis.rawClient.call('XACK', STREAM, GROUP, id).catch(() => {});
         }
       }
     } catch (err) {
@@ -118,7 +123,7 @@ async function runMemoryConsumer(handler, pace) {
 
 async function depth() {
   if (driver() === 'redis') {
-    try { return await redis.client.xlen(STREAM); } catch { return -1; }
+    try { return await redis.rawClient.call('XLEN', STREAM); } catch { return -1; }
   }
   return memQ.length;
 }
