@@ -1,7 +1,8 @@
 const BannerAd = require('../models/bannerAd.model');
+const supabase = require('../utils/supabaseClient');
 const logger = require('../utils/logger');
 
-const PLACEMENTS = ['top', 'bottom', 'left', 'right', 'overlay'];
+const PLACEMENTS = ['top', 'bottom', 'left', 'right', 'overlay', 'reward'];
 const PRICING_MODELS = ['cpm', 'cpc', 'flat'];
 
 // Fields a marketer is allowed to set/edit (never budget/impressions/clicks/status directly)
@@ -125,6 +126,7 @@ exports.list = async (req, res, next) => {
     if (req.query.status) query.status = req.query.status;
     if (req.query.placement) query.placement = req.query.placement;
     if (req.query.marketer_id) query.marketer_id = req.query.marketer_id;
+    if (req.query.owner) query.owner = req.query.owner; // 'house' | 'marketer'
 
     const banners = await BannerAd.find(query)
       .sort({ created_at: -1 })
@@ -179,26 +181,31 @@ exports.serve = async (req, res, next) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 1, 10);
     const now = new Date();
 
-    // Uses index {status:1, placement:1}. Early $match, then over-fetch a small
-    // candidate pool for weighted rotation, project only what the client renders.
+    // House banners (admin-managed, e.g. the reward-screen slot) are free — no
+    // budget gate. Marketer banners require remaining budget. The reward
+    // placement is always a house slot.
+    const isHouse = req.query.owner === 'house' || placement === 'reward';
+    const match = {
+      status: 'active',
+      placement,
+      $and: [
+        { $or: [{ start_date: { $exists: false } }, { start_date: null }, { start_date: { $lte: now } }] },
+        { $or: [{ end_date: { $exists: false } }, { end_date: null }, { end_date: { $gte: now } }] }
+      ]
+    };
+    if (isHouse) match.owner = 'house';
+    else match.remaining_budget = { $gt: 0 };
+
+    // Early $match on the index, over-fetch a small pool for weighted rotation,
+    // project only what the client renders.
     const candidates = await BannerAd.aggregate([
-      {
-        $match: {
-          status: 'active',
-          placement,
-          remaining_budget: { $gt: 0 },
-          $and: [
-            { $or: [{ start_date: { $exists: false } }, { start_date: null }, { start_date: { $lte: now } }] },
-            { $or: [{ end_date: { $exists: false } }, { end_date: null }, { end_date: { $gte: now } }] }
-          ]
-        }
-      },
+      { $match: match },
       { $sort: { created_at: -1 } },
       { $limit: 50 },
       {
         $project: {
           title: 1, image_url: 1, target_url: 1, placement: 1,
-          pricing_model: 1, weight: 1, created_at: 1
+          pricing_model: 1, owner: 1, weight: 1, created_at: 1
         }
       }
     ]);
@@ -310,6 +317,79 @@ exports.click = async (req, res, next) => {
     res.json({ status: true, counted: true, target_url: banner.target_url });
   } catch (err) {
     logger.error(`BannerAdController.click - Error: ${err.message}`);
+    next(err);
+  }
+};
+
+// ===================================================================
+// HOUSE BANNERS — admin-managed, no marketer account, free rotation.
+// ===================================================================
+
+// POST /banner/house/upload  (multipart: image)  [admin]
+// Uploads an image to Supabase and returns its public URL.
+exports.uploadImage = async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ status: false, error: 'image file required' });
+    const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase();
+    const filename = `house/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error } = await supabase.storage
+      .from('banners')
+      .upload(filename, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
+    if (error) {
+      logger.error(`BannerAdController.uploadImage - supabase: ${error.message}`);
+      return res.status(502).json({ status: false, error: 'upload failed' });
+    }
+    const image_url = supabase.storage.from('banners').getPublicUrl(filename).data.publicUrl;
+    res.json({ status: true, image_url });
+  } catch (err) {
+    logger.error(`BannerAdController.uploadImage - Error: ${err.message}`);
+    next(err);
+  }
+};
+
+// POST /banner/house  [admin]  create a house banner (active immediately).
+exports.createHouse = async (req, res, next) => {
+  try {
+    const { title, image_url, target_url, placement, weight, start_date, end_date } = req.body;
+    if (!title || !image_url) {
+      return res.status(400).json({ status: false, error: 'title and image_url are required' });
+    }
+    const place = placement && PLACEMENTS.includes(placement) ? placement : 'reward';
+
+    const banner = await BannerAd.create({
+      owner: 'house',
+      title,
+      image_url,
+      target_url: target_url || undefined,
+      placement: place,
+      pricing_model: 'house',
+      rate: 0,
+      budget_allocation: 0,
+      remaining_budget: 0,
+      weight: Number.isFinite(Number(weight)) ? Number(weight) : 1,
+      start_date: start_date ? new Date(start_date) : undefined,
+      end_date: end_date ? new Date(end_date) : undefined,
+      status: 'active', // house banners are live on create (admin controls them)
+      created_at: new Date(),
+    });
+
+    logger.info(`BannerAdController.createHouse - House banner ${banner._id} created by admin ${req.user.id}`);
+    res.json({ status: true, banner });
+  } catch (err) {
+    logger.error(`BannerAdController.createHouse - Error: ${err.message}`);
+    next(err);
+  }
+};
+
+// DELETE /banner/:id  [admin]  remove a banner (house or marketer).
+exports.remove = async (req, res, next) => {
+  try {
+    const del = await BannerAd.deleteOne({ _id: req.params.id });
+    if (!del.deletedCount) return res.status(404).json({ status: false, error: 'Banner not found' });
+    logger.info(`BannerAdController.remove - Banner ${req.params.id} deleted by admin ${req.user.id}`);
+    res.json({ status: true });
+  } catch (err) {
+    logger.error(`BannerAdController.remove - Error: ${err.message}`);
     next(err);
   }
 };
