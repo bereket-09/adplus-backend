@@ -14,6 +14,13 @@ const blacklistRoutes = require('./blacklist.routes');
 const billingModelRoutes = require('./billingModel.routes');
 const triggerRoutes = require('./trigger.routes');
 const fraudRoutes = require('./fraud.routes');
+const notificationRoutes = require('./notification.routes');
+const walletRoutes = require('./wallet.routes');
+const rewardCatalogRoutes = require('./rewardCatalog.routes');
+const statsRoutes = require('./stats.routes');
+const pacingRoutes = require('./pacing.routes');
+const scheduleRoutes = require('./schedule.routes');
+const bannerAdRoutes = require('./bannerAd.routes');
 
 const rateLimiter = require('../../utils/rateLimiter');
 const { checkMaintenanceMode } = require('../../middleware/maintenance.middleware');
@@ -35,6 +42,11 @@ router.use('/ad', adRoutes);
 // OCS trigger ingestion (authenticated by x-ocs-key inside the controller).
 // High limit — this is the morning-burst entry point; it only enqueues.
 router.use('/trigger', rateLimiter.middleware(20_000, 60_000, 'trigger'), triggerRoutes);
+
+// Public reward catalog (admin write routes self-guard); banner serve/track are
+// public while create/approve self-guard inside the route file.
+router.use('/reward-catalog', rateLimiter.middleware(200, 60_000, 'reward-catalog'), rewardCatalogRoutes);
+router.use('/banner', rateLimiter.middleware(2000, 60_000, 'banner'), bannerAdRoutes);
 
 // Health check endpoint (Public)
 router.get('/health', async (req, res) => {
@@ -70,5 +82,13 @@ router.use('/system-config', rateLimiter.middleware(100, 60_000, 'system'), syst
 router.use('/blacklist', rateLimiter.middleware(200, 60_000, 'blacklist'), blacklistRoutes);
 router.use('/billing-models', rateLimiter.middleware(200, 60_000, 'billing'), billingModelRoutes);
 router.use('/fraud', rateLimiter.middleware(500, 60_000, 'fraud'), fraudRoutes);
+
+// Marketer-facing modules (verifyToken-protected; each scopes to req.user.id,
+// schedule POST is ownership-checked in-controller).
+router.use('/notifications', rateLimiter.middleware(500, 60_000, 'notifications'), notificationRoutes);
+router.use('/wallet', rateLimiter.middleware(500, 60_000, 'wallet'), walletRoutes);
+router.use('/stats', rateLimiter.middleware(1000, 60_000, 'stats'), statsRoutes);
+router.use('/pacing', rateLimiter.middleware(500, 60_000, 'pacing'), pacingRoutes);
+router.use('/schedule', rateLimiter.middleware(200, 60_000, 'schedule'), scheduleRoutes);
 
 module.exports = router;
