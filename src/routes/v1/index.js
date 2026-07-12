@@ -21,6 +21,7 @@ const statsRoutes = require('./stats.routes');
 const pacingRoutes = require('./pacing.routes');
 const scheduleRoutes = require('./schedule.routes');
 const bannerAdRoutes = require('./bannerAd.routes');
+const adminReportsRoutes = require('./adminReports.routes');
 
 const rateLimiter = require('../../utils/rateLimiter');
 const { checkMaintenanceMode } = require('../../middleware/maintenance.middleware');
@@ -90,5 +91,6 @@ router.use('/wallet', rateLimiter.middleware(500, 60_000, 'wallet'), walletRoute
 router.use('/stats', rateLimiter.middleware(1000, 60_000, 'stats'), statsRoutes);
 router.use('/pacing', rateLimiter.middleware(500, 60_000, 'pacing'), pacingRoutes);
 router.use('/schedule', rateLimiter.middleware(200, 60_000, 'schedule'), scheduleRoutes);
+router.use('/admin/reports', rateLimiter.middleware(120, 60_000, 'admin-reports'), adminReportsRoutes);
 
 module.exports = router;
