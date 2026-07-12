@@ -26,21 +26,30 @@ function init() {
     return null;
   }
 
-  const baseOpts = {
-    maxRetriesPerRequest: 3,
+  const url = cfg.redis.url;
+  // Upstash (and any managed Redis) requires TLS. Enable it for rediss:// URLs,
+  // for *.upstash.io hosts (even if given as redis://), or via REDIS_TLS=true.
+  const needsTls =
+    /^rediss:\/\//i.test(url) ||
+    /upstash\.io/i.test(url) ||
+    String(process.env.REDIS_TLS || '').toLowerCase() === 'true';
+
+  const commonOpts = {
     enableReadyCheck: true,
     lazyConnect: false,
     retryStrategy: (times) => Math.min(times * 200, 2000),
   };
+  if (needsTls) commonOpts.tls = { rejectUnauthorized: true };
 
   // Namespaced client for all general keys (counters, sets, buckets).
-  client = new Redis(cfg.redis.url, { keyPrefix: cfg.redis.keyPrefix, ...baseOpts });
+  client = new Redis(url, { keyPrefix: cfg.redis.keyPrefix, maxRetriesPerRequest: 3, ...commonOpts });
 
   // Raw client WITHOUT keyPrefix, used only for stream commands. ioredis applies
   // keyPrefix inconsistently across XADD/XREADGROUP vs XGROUP (whose key position
-  // it can't infer), which corrupts consumer-group routing. Using a prefix-free
-  // connection with fully-qualified stream keys avoids that entirely.
-  rawClient = new Redis(cfg.redis.url, baseOpts);
+  // it can't infer), which corrupts consumer-group routing. It also runs the
+  // BLOCKING XREADGROUP, so maxRetriesPerRequest MUST be null (ioredis requirement
+  // for blocking commands — otherwise blocking reads error under latency/Upstash).
+  rawClient = new Redis(url, { maxRetriesPerRequest: null, ...commonOpts });
 
   client.on('ready', () => { enabled = true; logger.info('redis: connected'); });
   client.on('error', (err) => { logger.error(`redis: ${err.message}`); });

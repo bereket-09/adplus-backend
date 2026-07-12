@@ -42,6 +42,16 @@ async function migrateWatchLinkIndexes() {
 }
 
 async function start() {
+  // FATAL in production if the JWT secret is missing, weak, or the committed
+  // placeholder — otherwise anyone can forge admin/marketer tokens. Refuse to boot.
+  if (process.env.NODE_ENV === 'production') {
+    const s = process.env.JWT_SECRET || '';
+    if (!s || s === 'replace_this_with_real_secret' || s.length < 16) {
+      logger.error('startup - FATAL: JWT_SECRET is missing/weak/placeholder in production. Set a strong random secret (openssl rand -base64 32).');
+      process.exit(1);
+    }
+  }
+
   // Redis first — the decision engine's correctness depends on it in production.
   redis.init();
   if (!redis.isConfigured()) {

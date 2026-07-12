@@ -18,7 +18,15 @@ const logger = require('../utils/logger');
 const { normalizeMsisdn } = require('../utils/msisdn');
 
 function authOk(req) {
-  if (!cfg.ocs.triggerKey) return true; // no key configured => open (dev)
+  // Fail CLOSED in production: an unset key must never leave the SMS/budget-
+  // spending trigger endpoint open to the internet. Only dev may run keyless.
+  if (!cfg.ocs.triggerKey) {
+    if (process.env.NODE_ENV === 'production') {
+      logger.error('trigger.authOk - OCS_TRIGGER_KEY not set in production; rejecting');
+      return false;
+    }
+    return true;
+  }
   return req.headers['x-ocs-key'] === cfg.ocs.triggerKey;
 }
 

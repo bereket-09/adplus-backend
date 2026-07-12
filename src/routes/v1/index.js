@@ -19,7 +19,7 @@ const rateLimiter = require('../../utils/rateLimiter');
 const { checkMaintenanceMode } = require('../../middleware/maintenance.middleware');
 
 // Public routes (not affected by maintenance mode check internally)
-router.use('/auth/admin', adminAuthRoutes);
+router.use('/auth/admin', rateLimiter.middleware(20, 60_000, 'auth-admin'), adminAuthRoutes);
 router.use("/auth/marketer", rateLimiter.middleware(20, 60_000, 'auth'), marketerAuthRoutes);
 router.get('/maintenance-status', require('../../controllers/systemConfig.controller').getMaintenanceStatus);
 

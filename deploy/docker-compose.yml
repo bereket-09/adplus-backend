@@ -38,6 +38,11 @@ services:
       - MONGO_URI=mongodb://mongo:27017/video_ads
       - REDIS_URL=redis://redis:6379
       - WORKERS_ENABLED=true
+      # Local/dev values so the production-mode security guards pass. In real
+      # prod these come from the platform's secret manager, never a file.
+      - JWT_SECRET=dev-only-not-a-real-secret-change-me-1234567890
+      - OCS_TRIGGER_KEY=dev-ocs-key
+      - CORS_ORIGINS=http://localhost:3000,https://adlaunch-next.vercel.app
     depends_on: [mongo, redis]
     ports:
       - "3001:3001"
