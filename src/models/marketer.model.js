@@ -38,4 +38,6 @@ const marketerSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now }
 });
 
+marketerSchema.index({ created_at: -1 }); // admin marketer-list keyset pagination
+
 module.exports = mongoose.model('Marketer', marketerSchema);

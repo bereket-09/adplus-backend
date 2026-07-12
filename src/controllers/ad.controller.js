@@ -12,6 +12,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegInstaller);
 const AdEngine = require('../utils/adEngine');
+const { isPaginated, parseLimit, parseCursor, applyCursorFilter, buildPage } = require('../utils/pagination');
 // Initialize Supabase client (used for getPublicUrl - a local synchronous operation)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
@@ -331,8 +332,32 @@ exports.list = async (req, res, next) => {
   try {
     logger.info(`AdController.list - Fetching ads`);
 
+    // Ad is time-ordered on `created_at` (indexed via {created_at:-1}).
+    // Keyset paginate on that key when ?limit/cursor are present.
+    const AD_PROJECTION = 'marketer_id campaign_name title cost_per_view cost_per_click budget_allocation remaining_budget status priority rate_tier campaign_type start_date end_date banner_url video_file_path created_at';
+
+    if (isPaginated(req.query)) {
+      const pageLimit = parseLimit(req.query.limit);
+      const cursor = parseCursor(req.query.cursor);
+      if (!cursor.valid) return res.status(400).json({ status: false, error: 'invalid cursor' });
+      const filter = applyCursorFilter({}, cursor.date, 'created_at');
+
+      const rows = await Ad.find(filter)
+        .select(AD_PROJECTION)
+        .populate('marketer_id', 'name email')
+        .sort({ created_at: -1 })
+        .limit(pageLimit + 1)
+        .lean();
+
+      const { data, pagination } = buildPage(rows, pageLimit, 'created_at');
+      logger.info(`AdController.list - Returned ${data.length} ads (paginated)`);
+      return res.json({ status: true, data, pagination });
+    }
+
     const ads = await Ad.find({})
-      .populate("marketer_id", "name email");
+      .populate("marketer_id", "name email")
+      .sort({ created_at: -1 })
+      .lean();
 
     res.json({ status: true, ads });
   } catch (err) {

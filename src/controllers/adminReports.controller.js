@@ -32,6 +32,7 @@ const Ad = require('../models/ad.model');
 const Marketer = require('../models/marketer.model');
 const FraudDetection = require('../models/fraudDetection.model');
 const logger = require('../utils/logger');
+const { parseLimit } = require('../utils/pagination');
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -80,6 +81,36 @@ function pct(part, whole) {
 }
 
 // ---------------------------------------------------------------------------
+// Leaderboard / ledger capping.
+//
+// The reports below are $group-then-$sort-by-metric aggregations (spend,
+// completions, occurrences), NOT raw time-ordered rows. A created_at keyset
+// cursor is therefore meaningless here — there is no monotonic time column on a
+// grouped row to seek on, and offset/.skip() is forbidden by contract. So these
+// arrays are *capped* (never unbounded, never .skip()) and the size is exposed
+// via ?limit (clamped 1..100, per-report default). We fetch cap+1 as a sentinel
+// so `has_more` reports honestly whether the leaderboard was truncated.
+// next_cursor is always null: these arrays are not resumable by time keyset.
+//
+// Raw, genuinely time-ordered ledgers/detections are keyset-paginated in their
+// own controllers (wallet/transactions, fraud/detections, analytics/audits).
+
+// Resolve the cap for a leaderboard: honor ?limit (max 100) when present,
+// otherwise fall back to the report's historical default.
+function leaderboardCap(query, def) {
+  if (query && query.limit !== undefined) return parseLimit(query.limit, { def, max: 100 });
+  return def;
+}
+
+// Build the standardized pagination block for a capped (non-keyset) leaderboard.
+// `rows` was fetched with cap+1; slice back to `cap` and set has_more.
+function capPage(rows, cap) {
+  const has_more = rows.length > cap;
+  const data = has_more ? rows.slice(0, cap) : rows;
+  return { data, pagination: { limit: cap, next_cursor: null, has_more, count: data.length } };
+}
+
+// ---------------------------------------------------------------------------
 // GET /admin/reports/revenue
 // Spend / revenue / ARPU / top-spenders / budget utilization.
 // Revenue is derived from committed watchlink spend (reserved_amount on
@@ -89,6 +120,7 @@ exports.revenue = async (req, res, next) => {
   try {
     const days = windowDays(req.query.days);
     const since = sinceFrom(days);
+    const spendersCap = leaderboardCap(req.query, 10);
 
     const [
       spendAgg,
@@ -126,7 +158,7 @@ exports.revenue = async (req, res, next) => {
           }
         },
         { $sort: { spend: -1 } },
-        { $limit: 10 }
+        { $limit: spendersCap + 1 } // +1 sentinel → honest has_more
       ]).option({ maxTimeMS: MAX_TIME_MS }),
 
       // Budget utilization across active campaigns (allocation vs remaining).
@@ -150,8 +182,11 @@ exports.revenue = async (req, res, next) => {
     const completions = committedAgg[0]?.completions || 0;
     const arpu = round2(activeMarketers ? totalSpend / activeMarketers : 0);
 
+    // Cap the leaderboard (cap+1 was fetched as a sentinel for has_more).
+    const { data: spenderRows, pagination: spendersPagination } = capPage(topSpendersAgg, spendersCap);
+
     // Hydrate top-spender names in a single lookup.
-    const spenderIds = topSpendersAgg.map(s => s._id).filter(Boolean);
+    const spenderIds = spenderRows.map(s => s._id).filter(Boolean);
     const spenderDocs = spenderIds.length
       ? await Marketer.find({ _id: { $in: spenderIds } })
           .select('name company_name email')
@@ -159,7 +194,7 @@ exports.revenue = async (req, res, next) => {
           .maxTimeMS(MAX_TIME_MS)
       : [];
     const spenderMap = new Map(spenderDocs.map(m => [m._id.toString(), m]));
-    const topSpenders = topSpendersAgg.map(s => {
+    const topSpenders = spenderRows.map(s => {
       const m = s._id ? spenderMap.get(s._id.toString()) : null;
       return {
         marketer_id: s._id,
@@ -195,7 +230,8 @@ exports.revenue = async (req, res, next) => {
         utilization_pct: pct(consumed, allocated),
         campaigns: utilizationAgg[0]?.campaigns || 0
       },
-      top_spenders: topSpenders
+      top_spenders: topSpenders,
+      top_spenders_pagination: spendersPagination
     });
   } catch (err) {
     return next(err);
@@ -210,10 +246,11 @@ exports.campaigns = async (req, res, next) => {
   try {
     const days = windowDays(req.query.days);
     const since = sinceFrom(days);
+    const cap = leaderboardCap(req.query, 50);
 
     // Per-ad funnel + spend from watchlinks (early $match on {status,created_at}
-    // / {ad_id,created_at}). Capped to the top 50 by volume.
-    const perAd = await WatchLink.aggregate([
+    // / {ad_id,created_at}). Capped to the top N by volume (cap+1 sentinel).
+    const perAdRaw = await WatchLink.aggregate([
       { $match: { created_at: { $gte: since } } },
       {
         $group: {
@@ -228,8 +265,9 @@ exports.campaigns = async (req, res, next) => {
         }
       },
       { $sort: { completed: -1, total: -1 } },
-      { $limit: 50 }
+      { $limit: cap + 1 }
     ]).option({ maxTimeMS: MAX_TIME_MS });
+    const { data: perAd, pagination: campaignsPagination } = capPage(perAdRaw, cap);
 
     // Rewards granted per ad, same window.
     const rewardsAgg = await Reward.aggregate([
@@ -279,7 +317,7 @@ exports.campaigns = async (req, res, next) => {
 
     logger.info(`AdminReports.campaigns (${days}d): ${leaderboard.length} campaigns`);
 
-    return res.json({ status: true, days, since, count: leaderboard.length, campaigns: leaderboard });
+    return res.json({ status: true, days, since, count: leaderboard.length, campaigns: leaderboard, pagination: campaignsPagination });
   } catch (err) {
     return next(err);
   }
@@ -293,8 +331,9 @@ exports.marketers = async (req, res, next) => {
   try {
     const days = windowDays(req.query.days);
     const since = sinceFrom(days);
+    const cap = leaderboardCap(req.query, 50);
 
-    const [engagementAgg, spendAgg] = await Promise.all([
+    const [engagementRaw, spendAgg] = await Promise.all([
       // Per-marketer engagement from watchlinks ({marketer_id,created_at}).
       WatchLink.aggregate([
         { $match: { created_at: { $gte: since } } },
@@ -318,7 +357,7 @@ exports.marketers = async (req, res, next) => {
           }
         },
         { $sort: { completed: -1, impressions: -1 } },
-        { $limit: 50 }
+        { $limit: cap + 1 }
       ]).option({ maxTimeMS: MAX_TIME_MS }),
 
       // Per-marketer deduction totals ({type,created_at}).
@@ -328,6 +367,7 @@ exports.marketers = async (req, res, next) => {
       ]).option({ maxTimeMS: MAX_TIME_MS })
     ]);
 
+    const { data: engagementAgg, pagination: marketersPagination } = capPage(engagementRaw, cap);
     const deductionMap = new Map(spendAgg.map(d => [String(d._id), d.deductions]));
 
     const marketerIds = engagementAgg.map(m => m._id).filter(Boolean);
@@ -371,7 +411,7 @@ exports.marketers = async (req, res, next) => {
 
     logger.info(`AdminReports.marketers (${days}d): ${scorecards.length} marketers`);
 
-    return res.json({ status: true, days, since, count: scorecards.length, marketers: scorecards });
+    return res.json({ status: true, days, since, count: scorecards.length, marketers: scorecards, pagination: marketersPagination });
   } catch (err) {
     return next(err);
   }
@@ -385,8 +425,9 @@ exports.rewards = async (req, res, next) => {
   try {
     const days = windowDays(req.query.days);
     const since = sinceFrom(days);
+    const offerCap = leaderboardCap(req.query, 25);
 
-    const [byStatus, byOffer, daily] = await Promise.all([
+    const [byStatus, byOfferRaw, daily] = await Promise.all([
       // Status split ({status,granted_at}).
       Reward.aggregate([
         { $match: { granted_at: { $gte: since } } },
@@ -405,7 +446,7 @@ exports.rewards = async (req, res, next) => {
           }
         },
         { $sort: { total: -1 } },
-        { $limit: 25 }
+        { $limit: offerCap + 1 }
       ]).option({ maxTimeMS: MAX_TIME_MS }),
 
       // Daily granted/failed trend.
@@ -422,6 +463,8 @@ exports.rewards = async (req, res, next) => {
         { $sort: { _id: 1 } }
       ]).option({ maxTimeMS: MAX_TIME_MS })
     ]);
+
+    const { data: byOffer, pagination: byOfferPagination } = capPage(byOfferRaw, offerCap);
 
     const statusMap = byStatus.reduce((acc, s) => {
       acc[s._id || 'unknown'] = s.count;
@@ -449,6 +492,7 @@ exports.rewards = async (req, res, next) => {
         failed: o.failed,
         success_rate: pct(o.granted, o.total)
       })),
+      by_offer_pagination: byOfferPagination,
       daily: daily.map(d => ({ date: d._id, granted: d.granted, failed: d.failed, pending: d.pending }))
     });
   } catch (err) {
@@ -801,8 +845,9 @@ exports.risk = async (req, res, next) => {
   try {
     const days = windowDays(req.query.days);
     const since = sinceFrom(days);
+    const signalCap = leaderboardCap(req.query, 25);
 
-    const [byAction, byStage, bySignal, scoreBuckets, daily, totals] = await Promise.all([
+    const [byAction, byStage, bySignalRaw, scoreBuckets, daily, totals] = await Promise.all([
       // Action split ({action,created_at}).
       FraudDetection.aggregate([
         { $match: { created_at: { $gte: since } } },
@@ -829,7 +874,7 @@ exports.risk = async (req, res, next) => {
           }
         },
         { $sort: { occurrences: -1 } },
-        { $limit: 25 }
+        { $limit: signalCap + 1 }
       ]).option({ maxTimeMS: MAX_TIME_MS }),
 
       // Score distribution buckets.
@@ -861,6 +906,7 @@ exports.risk = async (req, res, next) => {
       FraudDetection.countDocuments({ created_at: { $gte: since } }).maxTimeMS(MAX_TIME_MS).catch(() => 0)
     ]);
 
+    const { data: bySignal, pagination: bySignalPagination } = capPage(bySignalRaw, signalCap);
     const mapKV = (rows) => rows.map(r => ({ key: r._id || 'unknown', count: r.count }));
 
     logger.info(`AdminReports.risk (${days}d): total=${totals}`);
@@ -877,6 +923,7 @@ exports.risk = async (req, res, next) => {
         occurrences: s.occurrences,
         avg_weight: round2(s.avg_weight)
       })),
+      by_signal_pagination: bySignalPagination,
       score_buckets: scoreBuckets.map(b => ({
         range: b._id === '100+' ? '100+' : `${b._id}-${b._id + 20}`,
         count: b.count

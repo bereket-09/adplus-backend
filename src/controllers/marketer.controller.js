@@ -4,6 +4,7 @@ const logger = require('../utils/logger'); // <-- import logger
 const jwt = require("jsonwebtoken");
 const path = require('path');
 const supabase = require('../utils/supabaseClient');
+const { isPaginated, parseLimit, parseCursor, applyCursorFilter, buildPage } = require('../utils/pagination');
 
 exports.create = async (req, res, next) => {
   try {
@@ -130,6 +131,25 @@ exports.get = async (req, res, next) => {
 
 exports.list = async (req, res, next) => {
   try {
+    // Marketer is time-ordered on `created_at` (indexed via {created_at:-1}).
+    // Keyset paginate on that key when ?limit/cursor are present.
+    if (isPaginated(req.query)) {
+      const pageLimit = parseLimit(req.query.limit);
+      const cursor = parseCursor(req.query.cursor);
+      if (!cursor.valid) return res.status(400).json({ status: false, error: 'invalid cursor' });
+      const filter = applyCursorFilter({}, cursor.date, 'created_at');
+
+      const rows = await Marketer.find(filter)
+        .select('-password') // never expose the password hash
+        .sort({ created_at: -1 })
+        .limit(pageLimit + 1)
+        .lean();
+
+      const { data, pagination } = buildPage(rows, pageLimit, 'created_at');
+      logger.info(`MarketerController.list - Returned ${data.length} marketers (paginated)`);
+      return res.json({ status: true, data, pagination });
+    }
+
     const marketers = await Marketer.find({});
     logger.info(`MarketerController.list - Retrieved ${marketers.length} marketers`);
     res.json({ status: true, marketers });

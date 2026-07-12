@@ -34,5 +34,7 @@ const adSchema = new mongoose.Schema({
 
 adSchema.index({ marketer_id: 1 });
 adSchema.index({ status: 1, remaining_budget: 1, priority: -1 }); // getServableAds
+adSchema.index({ created_at: -1 }); // admin ad-list keyset pagination
+adSchema.index({ marketer_id: 1, created_at: -1 }); // per-marketer ad-list keyset pagination
 
 module.exports = mongoose.model('Ad', adSchema);

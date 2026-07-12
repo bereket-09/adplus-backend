@@ -5,6 +5,7 @@ const Marketer = require('../models/marketer.model');
 const Reward = require('../models/reward.model');
 const MarketerTransaction = require('../models/marketerTransaction.model');
 const logger = require('../utils/logger'); // <-- import logger
+const { isPaginated, parseLimit, parseCursor, applyCursorFilter, buildPage } = require('../utils/pagination');
 
 exports.getAudits = async (req, res, next) => {
     try {
@@ -17,7 +18,33 @@ exports.getAudits = async (req, res, next) => {
         if (marketer_id) query.marketer_id = marketer_id;
         if (type) query.type = type;
 
-        const audits = await AuditLog.find(query).sort({ timestamp: -1 }).limit(parseInt(limit));
+        // AuditLog is time-ordered on `timestamp` (indexed via {ad_id,type,timestamp},
+        // {type,timestamp}, {msisdn,timestamp}). Keyset paginate on that key.
+        const AUDIT_SORT = 'timestamp';
+        const AUDIT_PROJECTION = 'type msisdn ad_id marketer_id timestamp ip user_agent device_info location fraud_detected';
+
+        if (isPaginated(req.query)) {
+            const pageLimit = parseLimit(req.query.limit);
+            const cursor = parseCursor(req.query.cursor);
+            if (!cursor.valid) return res.status(400).json({ status: false, error: 'invalid cursor' });
+            applyCursorFilter(query, cursor.date, AUDIT_SORT);
+
+            const rows = await AuditLog.find(query)
+                .select(AUDIT_PROJECTION)
+                .sort({ [AUDIT_SORT]: -1 })
+                .limit(pageLimit + 1)
+                .lean();
+
+            const { data, pagination } = buildPage(rows, pageLimit, AUDIT_SORT);
+            logger.info(`AnalyticsController.getAudits - Returned ${data.length} audit logs (paginated)`);
+            return res.json({ status: true, data, pagination });
+        }
+
+        const audits = await AuditLog.find(query)
+            .select(AUDIT_PROJECTION)
+            .sort({ timestamp: -1 })
+            .limit(parseInt(limit))
+            .lean();
         logger.info(`AnalyticsController.getAudits - Found ${audits.length} audit logs`);
         res.json({ status: true, audits });
     } catch (err) {
@@ -37,7 +64,32 @@ exports.getWatchLinks = async (req, res, next) => {
         if (ad_id) query.ad_id = ad_id;
         if (marketer_id) query.marketer_id = marketer_id;
 
-        const links = await WatchLink.find(query).sort({ created_at: -1 }).limit(parseInt(limit));
+        // WatchLink is time-ordered on `created_at` (indexed via {ad_id,created_at},
+        // {marketer_id,created_at}, {status,created_at}). Keyset paginate on that key.
+        const WL_PROJECTION = 'token msisdn ad_id marketer_id status created_at opened_at started_at completed_at budget_state reserved_amount reward_status clicked device_info location meta_json';
+
+        if (isPaginated(req.query)) {
+            const pageLimit = parseLimit(req.query.limit);
+            const cursor = parseCursor(req.query.cursor);
+            if (!cursor.valid) return res.status(400).json({ status: false, error: 'invalid cursor' });
+            applyCursorFilter(query, cursor.date, 'created_at');
+
+            const rows = await WatchLink.find(query)
+                .select(WL_PROJECTION)
+                .sort({ created_at: -1 })
+                .limit(pageLimit + 1)
+                .lean();
+
+            const { data, pagination } = buildPage(rows, pageLimit, 'created_at');
+            logger.info(`AnalyticsController.getWatchLinks - Returned ${data.length} watch links (paginated)`);
+            return res.json({ status: true, data, pagination });
+        }
+
+        const links = await WatchLink.find(query)
+            .select(WL_PROJECTION)
+            .sort({ created_at: -1 })
+            .limit(parseInt(limit))
+            .lean();
         logger.info(`AnalyticsController.getWatchLinks - Found ${links.length} watch links`);
         res.json({ status: true, watch_links: links });
     } catch (err) {
@@ -473,8 +525,9 @@ exports.getAdUsers = async (req, res, next) => {
         const { adId } = req.params;
         logger.info(`AnalyticsController.getAdUsers - Fetching users for ad: ${adId}`);
 
-        const watchSessions = await WatchLink.find({ ad_id: adId }).select('msisdn status opened_at started_at completed_at meta_json');
-        const users = watchSessions.map(w => ({
+        // Subscribers for one ad = WatchLink rows, time-ordered on `created_at`
+        // (indexed via {ad_id,created_at}). Keyset paginate on that key.
+        const toUser = (w) => ({
             msisdn: w.msisdn,
             status: w.status,
             opened_at: w.opened_at,
@@ -483,7 +536,31 @@ exports.getAdUsers = async (req, res, next) => {
             device_info: w.meta_json?.deviceInfo,
             ip: w.meta_json?.ip,
             location: w.meta_json?.location
-        }));
+        });
+        const AD_USERS_PROJECTION = 'msisdn status created_at opened_at started_at completed_at meta_json';
+
+        if (isPaginated(req.query)) {
+            const pageLimit = parseLimit(req.query.limit);
+            const cursor = parseCursor(req.query.cursor);
+            if (!cursor.valid) return res.status(400).json({ status: false, error: 'invalid cursor' });
+            const filter = applyCursorFilter({ ad_id: adId }, cursor.date, 'created_at');
+
+            const rows = await WatchLink.find(filter)
+                .select(AD_USERS_PROJECTION)
+                .sort({ created_at: -1 })
+                .limit(pageLimit + 1)
+                .lean();
+
+            const { data, pagination } = buildPage(rows, pageLimit, 'created_at');
+            logger.info(`AnalyticsController.getAdUsers - Returned ${data.length} users (paginated)`);
+            return res.json({ status: true, ad_id: adId, data: data.map(toUser), pagination });
+        }
+
+        const watchSessions = await WatchLink.find({ ad_id: adId })
+            .select(AD_USERS_PROJECTION)
+            .sort({ created_at: -1 })
+            .lean();
+        const users = watchSessions.map(toUser);
 
         logger.info(`AnalyticsController.getAdUsers - Found ${users.length} users`);
         res.json({ status: true, ad_id: adId, users });
