@@ -17,8 +17,11 @@ router.get('/:id', MarketerController.get);
 router.get('/', MarketerController.list);
 
 
-// PUT /api/v1/marketer/:userId
-router.put('/:userId', MarketerController.update);
+// PUT /api/v1/marketer/:id
+// NOTE: the param MUST be `:id` — MarketerController.update reads req.params.id.
+// It was previously `:userId`, so req.params.id was undefined and every update
+// (KYC approve/reject, status change, profile save) 404'd with "marketer not found".
+router.put('/:id', MarketerController.update);
 router.post('/:id/kyc', upload.single('document'), MarketerController.uploadKYCDoc);
 
 module.exports = router;

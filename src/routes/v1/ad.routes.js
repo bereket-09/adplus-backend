@@ -35,4 +35,11 @@ router.get('/list', AdController.list);
 // APPROVE AD
 router.post('/approve', AdController.approve);
 
+// UPDATE AD (status/reject, budget, schedule, creative). The controller reads
+// req.params.adId, so the param MUST be :adId. This route was missing entirely,
+// which 404'd every adAPI.update() call (campaign reject, budget adjust, bulk ops).
+// Admin-only on purpose: the controller does not scope to the owning marketer.
+// multer is a no-op for JSON bodies; it enables the optional video replacement.
+router.put('/:adId', upload.single('video'), AdController.update);
+
 module.exports = router;

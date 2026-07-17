@@ -172,6 +172,19 @@ exports.update = async (req, res, next) => {
       return res.status(404).json({ status: false, error: 'marketer not found' });
     }
 
+    // AuthZ: this route sits behind verifyToken only, so without these checks any
+    // logged-in marketer could edit ANY marketer (IDOR) and self-grant budget or
+    // KYC approval. Admins may edit anyone; a marketer may edit only themselves,
+    // and never the privileged fields (gated further below).
+    const isAdminReq = req.user?.role === 'admin';
+    // Bridge-minted tokens carry `id`; legacy Express marketer logins carried `user_id`.
+    const requesterId = String(req.user?.id || req.user?.user_id || '');
+    const isSelf = requesterId !== '' && requesterId === String(marketerId);
+    if (!isAdminReq && !isSelf) {
+      logger.warn(`MarketerController.update - FORBIDDEN: ${requesterId} tried to edit ${marketerId}`);
+      return res.status(403).json({ status: false, error: 'forbidden' });
+    }
+
     if (email && email !== marketer.email) {
       const existing = await Marketer.findOne({ email });
       if (existing) {
@@ -182,20 +195,27 @@ exports.update = async (req, res, next) => {
     }
 
     if (name) marketer.name = name;
-    if (total_budget !== undefined) {
-      marketer.total_budget = total_budget;
-      marketer.remaining_budget = Math.min(marketer.remaining_budget, total_budget);
-    }
     if (contact_info) marketer.contact_info = contact_info;
-    if (status) marketer.status = status;
-    
-    // KYC / Business Info
+
+    // ---- Privileged fields: ADMIN ONLY ----
+    // A marketer must never be able to grant itself budget, flip its own status,
+    // or self-approve KYC. Silently ignored (not an error) for self-edits so the
+    // profile/registration save still succeeds with the fields it may set.
+    if (isAdminReq) {
+      if (total_budget !== undefined) {
+        marketer.total_budget = total_budget;
+        marketer.remaining_budget = Math.min(marketer.remaining_budget, total_budget);
+      }
+      if (status) marketer.status = status;
+      if (kyc_status) marketer.kyc_status = kyc_status;
+      if (req.body.admin_comments !== undefined) marketer.admin_comments = req.body.admin_comments;
+    }
+
+    // ---- Business / KYC info: owner or admin ----
     if (company_name) marketer.company_name = company_name;
     if (business_reg_number) marketer.business_reg_number = business_reg_number;
     if (business_address) marketer.business_address = business_address;
     if (req.body.business_category) marketer.business_category = req.body.business_category;
-    if (kyc_status) marketer.kyc_status = kyc_status;
-    if (req.body.admin_comments !== undefined) marketer.admin_comments = req.body.admin_comments;
 
     // Contact Person nested logic
     if (req.body.contact_person) {
